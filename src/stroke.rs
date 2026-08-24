@@ -170,11 +170,27 @@ impl StrokePathBuilder {
         build_border(&self.clean, 1.0, radius, settings, &mut self.left);
         build_border(&self.clean, -1.0, radius, settings, &mut self.right);
 
+        let source_area = signed_area(&self.clean);
+        let left_is_inner = source_area > 0.0;
+        let right_is_inner = source_area < 0.0;
+        // Once an inward offset collapses through itself its signed area reverses. Omitting that
+        // invalid border keeps thick strokes filled instead of allowing the inverted loop to
+        // recreate a counter that has already closed.
+        let left_valid = !left_is_inner || signed_area(&self.left) * source_area > 0.0;
+        let right_valid = !right_is_inner || signed_area(&self.right) * source_area > 0.0;
+        let inward_must_collapse = radius * 2.0 >= minimum_extent(&self.clean);
+        if !left_valid || !right_valid || inward_must_collapse {
+            // Offset borders are the fast path, but an inward border can invert after a thick
+            // stroke consumes a narrow contour. A primitive union has bounded local geometry and
+            // remains correct after that topology change.
+            add_primitive_stroke(&self.clean, radius, settings, &mut self.points, &mut self.contour_ends);
+            return;
+        }
         if self.left.len() >= 2 {
             self.points.extend_from_slice(&self.left);
             self.contour_ends.push(self.points.len());
         }
-        if self.right.len() >= 2 {
+        if right_valid && self.right.len() >= 2 {
             self.points.extend(self.right.iter().rev().copied());
             self.contour_ends.push(self.points.len());
         }
@@ -346,6 +362,123 @@ fn push_round_join(
         let angle = start_angle + delta * (segment as f32 / segments as f32);
         push_unique(output, add(center, Point::new(angle.cos() * radius, angle.sin() * radius)));
     }
+}
+
+fn minimum_extent(contour: &[Point]) -> f32 {
+    let mut xmin = f32::MAX;
+    let mut xmax = f32::MIN;
+    let mut ymin = f32::MAX;
+    let mut ymax = f32::MIN;
+    for point in contour {
+        xmin = xmin.min(point.x);
+        xmax = xmax.max(point.x);
+        ymin = ymin.min(point.y);
+        ymax = ymax.max(point.y);
+    }
+    (xmax - xmin).min(ymax - ymin)
+}
+
+fn add_primitive_stroke(
+    contour: &[Point],
+    radius: f32,
+    settings: StrokeSettings,
+    points: &mut Vec<Point>,
+    contour_ends: &mut Vec<usize>,
+) {
+    let len = contour.len();
+    let mut directions = Vec::with_capacity(len);
+    for index in 0..len {
+        let start = contour[index];
+        let end = contour[(index + 1) % len];
+        let Some(direction) = normalize(sub(end, start)) else {
+            directions.push(Point::new(0.0, 0.0));
+            continue;
+        };
+        directions.push(direction);
+        let normal = mul(Point::new(-direction.y, direction.x), radius);
+        let rectangle = [add(start, normal), add(end, normal), sub(end, normal), sub(start, normal)];
+        append_clockwise(points, contour_ends, &rectangle);
+    }
+
+    let mut join = Vec::new();
+    for index in 0..len {
+        let incoming = directions[(index + len - 1) % len];
+        let outgoing = directions[index];
+        if dot(incoming, incoming) <= POINT_EPSILON_SQUARED
+            || dot(outgoing, outgoing) <= POINT_EPSILON_SQUARED
+        {
+            continue;
+        }
+        let current = contour[index];
+        let turn = cross(incoming, outgoing);
+        if turn.abs() <= TURN_EPSILON {
+            continue;
+        }
+        let side = if turn > 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let first_normal = mul(Point::new(-incoming.y, incoming.x), radius * side);
+        let second_normal = mul(Point::new(-outgoing.y, outgoing.x), radius * side);
+        let first = add(current, first_normal);
+        let second = add(current, second_normal);
+        join.clear();
+        match settings.line_join {
+            LineJoin::Round => {
+                let max_step = if radius <= ROUND_TOLERANCE {
+                    PI * 0.5
+                } else {
+                    2.0 * (1.0 - ROUND_TOLERANCE / radius).clamp(-1.0, 1.0).acos()
+                };
+                let segments = ((2.0 * PI / max_step).ceil() as usize).clamp(4, MAX_ARC_SEGMENTS * 2);
+                for segment in 0..segments {
+                    let angle = -2.0 * PI * segment as f32 / segments as f32;
+                    join.push(add(current, Point::new(angle.cos() * radius, angle.sin() * radius)));
+                }
+            }
+            LineJoin::Bevel => join.extend_from_slice(&[current, first, second]),
+            LineJoin::Miter => {
+                if let Some(intersection) = line_intersection(first, incoming, second, outgoing) {
+                    if distance_squared(intersection, current)
+                        <= square(radius * settings.effective_miter_limit())
+                    {
+                        join.extend_from_slice(&[current, first, intersection, second]);
+                    } else {
+                        join.extend_from_slice(&[current, first, second]);
+                    }
+                } else {
+                    join.extend_from_slice(&[current, first, second]);
+                }
+            }
+        }
+        append_clockwise(points, contour_ends, &join);
+    }
+}
+
+fn append_clockwise(points: &mut Vec<Point>, contour_ends: &mut Vec<usize>, contour: &[Point]) {
+    if contour.len() < 3 {
+        return;
+    }
+    if signed_area(contour) > 0.0 {
+        points.extend(contour.iter().rev().copied());
+    } else {
+        points.extend_from_slice(contour);
+    }
+    contour_ends.push(points.len());
+}
+
+fn signed_area(contour: &[Point]) -> f32 {
+    if contour.len() < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    let mut previous = contour[contour.len() - 1];
+    for &point in contour {
+        area += previous.x * point.y - point.x * previous.y;
+        previous = point;
+    }
+    area * 0.5
 }
 
 fn push_line(

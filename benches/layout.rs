@@ -11,14 +11,14 @@ Aliquet nibh praesent tristique magna sit. Purus viverra accumsan in nisl nisi s
 
 fn femtofont_layout_benchmark(c: &mut Criterion) {
     // Loading
-    let mut font = include_bytes!("../resources/fonts/Roboto-Regular.ttf") as &[u8];
-    let mut roboto_regular = femtofont::Font::from_bytes(font, femtofont::FontSettings::default()).unwrap();
+    let font = include_bytes!("../resources/fonts/Roboto-Regular.ttf") as &[u8];
+    let roboto_regular = femtofont::Font::from_bytes(font, femtofont::FontSettings::default()).unwrap();
     let mut layout = Layout::new(CoordinateSystem::PositiveYUp);
     layout.reset(&LayoutSettings {
         max_width: Some(200.0),
         ..LayoutSettings::default()
     });
-    let mut fonts = &mut [roboto_regular];
+    let fonts = &mut [roboto_regular];
 
     let mut group = c.benchmark_group("layout/femtofont");
     group.measurement_time(core::time::Duration::from_secs(4));

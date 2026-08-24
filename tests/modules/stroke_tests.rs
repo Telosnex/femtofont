@@ -82,3 +82,23 @@ fn join_styles_render_acute_glyphs() {
         }
     }
 }
+
+#[test]
+fn collapsed_counters_do_not_reopen_at_larger_widths() {
+    let font = Font::from_bytes(FONTS[0], FontSettings::default()).unwrap();
+    let fill_bounds = font.metrics('O', 80.0).bounds;
+    let center_x = fill_bounds.xmin + fill_bounds.width * 0.5;
+    let center_y = fill_bounds.ymin + fill_bounds.height * 0.5;
+    let center_coverage = |width| {
+        let (metrics, bitmap) = font.rasterize_stroke('O', 80.0, StrokeSettings::new(width));
+        let x = (center_x - metrics.xmin as f32).floor() as usize;
+        let top = metrics.ymin as f32 + metrics.height as f32;
+        let y = (top - center_y).floor() as usize;
+        bitmap[y * metrics.width + x]
+    };
+
+    assert_eq!(center_coverage(4.0), 0);
+    for width in [40.0, 60.0, 100.0] {
+        assert!(center_coverage(width) > 0, "counter reopened at width {width}");
+    }
+}

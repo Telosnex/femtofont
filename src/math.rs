@@ -346,8 +346,13 @@ impl Geometry {
 
     fn flatten_quad_contour(&mut self, curve: QuadCurve) {
         const MAX_DEPTH: u8 = 16;
-        let mut stack = vec![(curve, 0u8)];
-        while let Some((curve, depth)) = stack.pop() {
+        // A depth-first subdivision has at most one deferred right half per level. A fixed stack
+        // avoids a heap allocation for every curve in a glyph.
+        let mut stack = [(curve, 0u8); MAX_DEPTH as usize + 1];
+        let mut stack_len = 1;
+        while stack_len != 0 {
+            stack_len -= 1;
+            let (curve, depth) = stack[stack_len];
             if depth >= MAX_DEPTH
                 || point_line_distance_squared(curve.b, curve.a, curve.c) <= self.contour_tolerance_squared
             {
@@ -357,15 +362,19 @@ impl Geometry {
             let ab = midpoint(curve.a, curve.b);
             let bc = midpoint(curve.b, curve.c);
             let center = midpoint(ab, bc);
-            stack.push((QuadCurve::new(center, bc, curve.c), depth + 1));
-            stack.push((QuadCurve::new(curve.a, ab, center), depth + 1));
+            stack[stack_len] = (QuadCurve::new(center, bc, curve.c), depth + 1);
+            stack[stack_len + 1] = (QuadCurve::new(curve.a, ab, center), depth + 1);
+            stack_len += 2;
         }
     }
 
     fn flatten_cube_contour(&mut self, curve: CubeCurve) {
         const MAX_DEPTH: u8 = 16;
-        let mut stack = vec![(curve, 0u8)];
-        while let Some((curve, depth)) = stack.pop() {
+        let mut stack = [(curve, 0u8); MAX_DEPTH as usize + 1];
+        let mut stack_len = 1;
+        while stack_len != 0 {
+            stack_len -= 1;
+            let (curve, depth) = stack[stack_len];
             let flatness = point_line_distance_squared(curve.b, curve.a, curve.d)
                 .max(point_line_distance_squared(curve.c, curve.a, curve.d));
             if depth >= MAX_DEPTH || flatness <= self.contour_tolerance_squared {
@@ -378,8 +387,9 @@ impl Geometry {
             let abc = midpoint(ab, bc);
             let bcd = midpoint(bc, cd);
             let center = midpoint(abc, bcd);
-            stack.push((CubeCurve::new(center, bcd, cd, curve.d), depth + 1));
-            stack.push((CubeCurve::new(curve.a, ab, abc, center), depth + 1));
+            stack[stack_len] = (CubeCurve::new(center, bcd, cd, curve.d), depth + 1);
+            stack[stack_len + 1] = (CubeCurve::new(curve.a, ab, abc, center), depth + 1);
+            stack_len += 2;
         }
     }
 
