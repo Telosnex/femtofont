@@ -14,9 +14,11 @@ mod font;
 pub mod layout;
 mod math;
 mod raster;
+mod stroke;
 mod unicode;
 
 pub use crate::font::*;
+pub use crate::stroke::{LineJoin, StrokeSettings};
 
 /// Alias for Result<T, &'static str>.
 pub type FontResult<T> = Result<T, &'static str>;

@@ -43,13 +43,25 @@ impl Raster {
     }
 
     pub(crate) fn draw(&mut self, glyph: &Glyph, scale_x: f32, scale_y: f32, offset_x: f32, offset_y: f32) {
+        self.draw_lines(&glyph.v_lines, &glyph.m_lines, scale_x, scale_y, offset_x, offset_y);
+    }
+
+    pub(crate) fn draw_lines(
+        &mut self,
+        v_lines: &[Line],
+        m_lines: &[Line],
+        scale_x: f32,
+        scale_y: f32,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
         let params = f32x4::from_array([1.0 / scale_x, 1.0 / scale_y, scale_x, scale_y]);
         let scale = f32x4::from_array([scale_x, scale_y, scale_x, scale_y]);
         let offset = f32x4::from_array([offset_x, offset_y, offset_x, offset_y]);
-        for line in &glyph.v_lines {
+        for line in v_lines {
             self.v_line(line, line.coords * scale + offset);
         }
-        for line in &glyph.m_lines {
+        for line in m_lines {
             self.m_line(line, line.coords * scale + offset, line.params * params);
         }
     }

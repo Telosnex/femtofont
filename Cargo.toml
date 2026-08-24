@@ -14,6 +14,7 @@ edition = "2021"
 exclude = ["dev/**"]
 
 [dependencies]
+core_maths = "0.1.1"
 ttf-parser = { version = "0.25.1", default-features = false, features = [
     "opentype-layout", "no-std-float", "variable-fonts"
 ] }
