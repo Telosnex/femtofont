@@ -42,6 +42,7 @@ pub struct StrokeSettings {
 impl StrokeSettings {
     /// Creates round-join stroke settings with the supplied full width.
     #[inline]
+    #[must_use]
     pub const fn new(width: f32) -> Self {
         Self {
             width,
@@ -52,6 +53,7 @@ impl StrokeSettings {
 
     /// Sets the corner join style.
     #[inline]
+    #[must_use]
     pub const fn with_line_join(mut self, line_join: LineJoin) -> Self {
         self.line_join = line_join;
         self
@@ -59,6 +61,7 @@ impl StrokeSettings {
 
     /// Sets the miter limit.
     #[inline]
+    #[must_use]
     pub const fn with_miter_limit(mut self, miter_limit: f32) -> Self {
         self.miter_limit = miter_limit;
         self

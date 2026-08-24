@@ -1,10 +1,12 @@
 use crate::layout::GlyphRasterConfig;
 use crate::math::{Geometry, Line, Point};
 use crate::raster::Raster;
+use crate::stroke::{StrokeGeometry, StrokeSettings};
 use crate::unicode;
 use crate::FontResult;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::*;
 use core::cell::RefCell;
 use core::f32::math::*;
@@ -83,6 +85,21 @@ impl Default for Metrics {
             bounds: OutlineBounds::default(),
         }
     }
+}
+
+/// Rasterized fill and stroke coverage sharing one bitmap coordinate system.
+///
+/// Both coverage vectors have `metrics.width * metrics.height` entries (or three entries per
+/// physical pixel for subpixel methods). Paint `stroke` first and `fill` second to produce
+/// conventional outlined text with independently chosen colors.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StrokedGlyph {
+    /// Sizing and positioning metadata for both aligned coverage layers.
+    pub metrics: Metrics,
+    /// Fill coverage aligned to the expanded stroke bitmap.
+    pub fill: Vec<u8>,
+    /// Centered stroke coverage aligned to the expanded stroke bitmap.
+    pub stroke: Vec<u8>,
 }
 
 /// Metrics associated with line positioning.
@@ -512,6 +529,122 @@ impl<'a> Font<'a> {
         (metrics, offset_x, offset_y)
     }
 
+    /// Rasterizes aligned fill and stroke layers for a layout raster configuration.
+    #[inline]
+    pub fn rasterize_config_with_stroke(
+        &self,
+        config: GlyphRasterConfig,
+        settings: StrokeSettings,
+    ) -> StrokedGlyph {
+        self.rasterize_indexed_with_stroke(config.glyph_index, config.px, settings)
+    }
+
+    /// Rasterizes aligned fill and stroke layers for a character.
+    #[inline]
+    pub fn rasterize_with_stroke(&self, character: char, px: f32, settings: StrokeSettings) -> StrokedGlyph {
+        self.rasterize_indexed_with_stroke(self.lookup_glyph_index(character), px, settings)
+    }
+
+    /// Rasterizes aligned fill and stroke layers for a glyph index.
+    pub fn rasterize_indexed_with_stroke(
+        &self,
+        index: u16,
+        px: f32,
+        settings: StrokeSettings,
+    ) -> StrokedGlyph {
+        self.rasterize_indexed_stroke_impl(index, px, settings, false, true)
+    }
+
+    /// Rasterizes only stroke coverage for a layout raster configuration.
+    #[inline]
+    pub fn rasterize_config_stroke(
+        &self,
+        config: GlyphRasterConfig,
+        settings: StrokeSettings,
+    ) -> (Metrics, Vec<u8>) {
+        self.rasterize_indexed_stroke(config.glyph_index, config.px, settings)
+    }
+
+    /// Rasterizes only stroke coverage for a character.
+    #[inline]
+    pub fn rasterize_stroke(&self, character: char, px: f32, settings: StrokeSettings) -> (Metrics, Vec<u8>) {
+        self.rasterize_indexed_stroke(self.lookup_glyph_index(character), px, settings)
+    }
+
+    /// Rasterizes only stroke coverage for a glyph index.
+    pub fn rasterize_indexed_stroke(
+        &self,
+        index: u16,
+        px: f32,
+        settings: StrokeSettings,
+    ) -> (Metrics, Vec<u8>) {
+        let rasterized = self.rasterize_indexed_stroke_impl(index, px, settings, false, false);
+        (rasterized.metrics, rasterized.stroke)
+    }
+
+    /// Rasterizes aligned RGB-subpixel fill and stroke layers for a layout raster configuration.
+    #[inline]
+    pub fn rasterize_config_with_stroke_subpixel(
+        &self,
+        config: GlyphRasterConfig,
+        settings: StrokeSettings,
+    ) -> StrokedGlyph {
+        self.rasterize_indexed_with_stroke_subpixel(config.glyph_index, config.px, settings)
+    }
+
+    /// Rasterizes aligned RGB-subpixel fill and stroke layers for a character.
+    #[inline]
+    pub fn rasterize_with_stroke_subpixel(
+        &self,
+        character: char,
+        px: f32,
+        settings: StrokeSettings,
+    ) -> StrokedGlyph {
+        self.rasterize_indexed_with_stroke_subpixel(self.lookup_glyph_index(character), px, settings)
+    }
+
+    /// Rasterizes aligned RGB-subpixel fill and stroke layers for a glyph index.
+    pub fn rasterize_indexed_with_stroke_subpixel(
+        &self,
+        index: u16,
+        px: f32,
+        settings: StrokeSettings,
+    ) -> StrokedGlyph {
+        self.rasterize_indexed_stroke_impl(index, px, settings, true, true)
+    }
+
+    /// Rasterizes only RGB-subpixel stroke coverage for a layout raster configuration.
+    #[inline]
+    pub fn rasterize_config_stroke_subpixel(
+        &self,
+        config: GlyphRasterConfig,
+        settings: StrokeSettings,
+    ) -> (Metrics, Vec<u8>) {
+        self.rasterize_indexed_stroke_subpixel(config.glyph_index, config.px, settings)
+    }
+
+    /// Rasterizes only RGB-subpixel stroke coverage for a character.
+    #[inline]
+    pub fn rasterize_stroke_subpixel(
+        &self,
+        character: char,
+        px: f32,
+        settings: StrokeSettings,
+    ) -> (Metrics, Vec<u8>) {
+        self.rasterize_indexed_stroke_subpixel(self.lookup_glyph_index(character), px, settings)
+    }
+
+    /// Rasterizes only RGB-subpixel stroke coverage for a glyph index.
+    pub fn rasterize_indexed_stroke_subpixel(
+        &self,
+        index: u16,
+        px: f32,
+        settings: StrokeSettings,
+    ) -> (Metrics, Vec<u8>) {
+        let rasterized = self.rasterize_indexed_stroke_impl(index, px, settings, true, false);
+        (rasterized.metrics, rasterized.stroke)
+    }
+
     /// Retrieves the layout rasterized bitmap for the given raster config. If the raster config's
     /// character isn't present in the font, then the layout and bitmap for the font's default
     /// character's raster is returned instead.
@@ -643,6 +776,89 @@ impl<'a> Font<'a> {
         (metrics, canvas.get_bitmap())
     }
 
+    fn rasterize_indexed_stroke_impl(
+        &self,
+        index: u16,
+        px: f32,
+        settings: StrokeSettings,
+        subpixel: bool,
+        include_fill: bool,
+    ) -> StrokedGlyph {
+        if !px.is_finite() || px <= 0.0 {
+            return StrokedGlyph {
+                metrics: Metrics::default(),
+                fill: Vec::new(),
+                stroke: Vec::new(),
+            };
+        }
+
+        let glyph = self.get_glyph(index).expect("Invalid Index");
+        let scale = self.scale_factor(px);
+        let stroke_geometry = StrokeGeometry::new(&glyph, scale, settings);
+        let fill_bounds = glyph.bounds.scale(scale);
+        let stroke_is_empty = stroke_geometry.v_lines.is_empty() && stroke_geometry.m_lines.is_empty();
+        let bounds = if stroke_is_empty {
+            if include_fill {
+                fill_bounds
+            } else {
+                OutlineBounds::default()
+            }
+        } else if include_fill {
+            union_bounds(fill_bounds, stroke_geometry.bounds)
+        } else {
+            stroke_geometry.bounds
+        };
+        let metrics = metrics_for_bounds(bounds, &glyph, scale);
+        let x_multiplier = if subpixel {
+            3
+        } else {
+            1
+        };
+        let raster_width = metrics.width * x_multiplier;
+        let bitmap_len = raster_width * metrics.height;
+        let canvas_left = metrics.xmin as f32;
+        let canvas_top = metrics.ymin as f32 + metrics.height as f32;
+
+        let fill = if include_fill {
+            let mut canvas = Raster::new(raster_width, metrics.height);
+            if metrics.width > 0 && metrics.height > 0 {
+                let fill_top = fill_bounds.ymin + fill_bounds.height;
+                canvas.draw(
+                    &glyph,
+                    scale * x_multiplier as f32,
+                    scale,
+                    (fill_bounds.xmin - canvas_left) * x_multiplier as f32,
+                    canvas_top - fill_top,
+                );
+            }
+            canvas.get_bitmap()
+        } else {
+            Vec::new()
+        };
+
+        let stroke = if stroke_is_empty || metrics.width == 0 || metrics.height == 0 {
+            vec![0; bitmap_len]
+        } else {
+            let mut canvas = Raster::new(raster_width, metrics.height);
+            let stroke_top = stroke_geometry.bounds.ymin + stroke_geometry.bounds.height;
+            canvas.draw_lines(
+                &stroke_geometry.v_lines,
+                &stroke_geometry.m_lines,
+                x_multiplier as f32,
+                1.0,
+                (stroke_geometry.bounds.xmin - canvas_left) * x_multiplier as f32,
+                canvas_top - stroke_top,
+            );
+            canvas.get_bitmap()
+        };
+
+        StrokedGlyph {
+            metrics,
+            fill,
+            stroke,
+        }
+    }
+
     /// Checks if the font has a glyph for the given character.
     #[inline]
     pub fn has_glyph(&self, character: char) -> bool {
@@ -654,5 +870,36 @@ impl<'a> Font<'a> {
     #[inline]
     pub fn lookup_glyph_index(&self, character: char) -> u16 {
         self.face.glyph_index(character).map(|id| id.0).unwrap_or(0)
+    }
+}
+
+fn metrics_for_bounds(bounds: OutlineBounds, glyph: &Glyph, scale: f32) -> Metrics {
+    let xmax = bounds.xmin + bounds.width;
+    let ymax = bounds.ymin + bounds.height;
+    let xmin = floor(bounds.xmin) as i32;
+    let ymin = floor(bounds.ymin) as i32;
+    let right = ceil(xmax) as i32;
+    let top = ceil(ymax) as i32;
+    Metrics {
+        xmin,
+        ymin,
+        width: right.saturating_sub(xmin) as usize,
+        height: top.saturating_sub(ymin) as usize,
+        advance_width: scale * glyph.advance_width,
+        advance_height: scale * glyph.advance_height,
+        bounds,
+    }
+}
+
+fn union_bounds(a: OutlineBounds, b: OutlineBounds) -> OutlineBounds {
+    let xmin = a.xmin.min(b.xmin);
+    let ymin = a.ymin.min(b.ymin);
+    let xmax = (a.xmin + a.width).max(b.xmin + b.width);
+    let ymax = (a.ymin + a.height).max(b.ymin + b.height);
+    OutlineBounds {
+        xmin,
+        ymin,
+        width: xmax - xmin,
+        height: ymax - ymin,
     }
 }
