@@ -150,8 +150,7 @@ impl StrokePathBuilder {
         self.clean.reserve(contour.len());
         for point in contour {
             let scaled = Point::new(point.x * scale, point.y * scale);
-            if self.clean.last().map_or(true, |last| distance_squared(*last, scaled) > POINT_EPSILON_SQUARED)
-            {
+            if self.clean.last().is_none_or(|last| distance_squared(*last, scaled) > POINT_EPSILON_SQUARED) {
                 self.clean.push(scaled);
             }
         }
@@ -393,7 +392,7 @@ fn line_intersection(
 fn push_unique(points: &mut Vec<Point>, point: Point) {
     if point.x.is_finite()
         && point.y.is_finite()
-        && points.last().map_or(true, |last| distance_squared(*last, point) > POINT_EPSILON_SQUARED)
+        && points.last().is_none_or(|last| distance_squared(*last, point) > POINT_EPSILON_SQUARED)
     {
         points.push(point);
     }

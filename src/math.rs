@@ -157,7 +157,7 @@ impl Line {
         let dx = end.x - start.x;
         let dy = end.y - start.y;
         let tdx = if dx == 0.0 {
-            core::f32::MAX
+            f32::MAX
         } else {
             1.0 / dx
         };

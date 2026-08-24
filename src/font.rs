@@ -395,7 +395,7 @@ impl<'a> Font<'a> {
     }
 
     /// Returns the font's face name at a certain ID if it has one.
-    /// See https://learn.microsoft.com/en-us/typography/opentype/spec/name#name-ids for more info.
+    /// See <https://learn.microsoft.com/en-us/typography/opentype/spec/name#name-ids> for more info.
     pub fn name_with_id(&self, id: u16) -> Option<String> {
         if let Some(name) = self.face.names().get(id) {
             return Some(unicode::decode_utf16(name.name));
@@ -404,7 +404,7 @@ impl<'a> Font<'a> {
     }
 
     /// Returns the font's face name if it has one. It is from `Name ID 4` (Full Name) in the name table.
-    /// See https://learn.microsoft.com/en-us/typography/opentype/spec/name#name-ids for more info.
+    /// See <https://learn.microsoft.com/en-us/typography/opentype/spec/name#name-ids> for more info.
     pub fn full_name(&self) -> Option<String> {
         self.name_with_id(4)
     }

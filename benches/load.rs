@@ -9,7 +9,7 @@ type SetupFunction = fn(&mut BenchmarkGroup<WallTime>, &str, &[u8]);
 const CHARACTER: char = 'L';
 const SIZE: f32 = 10.0;
 const FONTS: [(&str, &[u8]); 1] = [("roboto", include_bytes!("../resources/fonts/Roboto-Regular.ttf"))];
-const FUNCTIONS: [SetupFunction; 4] = [setup_rusttype, setup_ab_glyph, setup_femtofont, setup_freetype];
+const FUNCTIONS: [SetupFunction; 3] = [setup_rusttype, setup_ab_glyph, setup_femtofont];
 
 fn setup(c: &mut Criterion) {
     let mut group = c.benchmark_group("load");
@@ -86,27 +86,6 @@ fn setup_femtofont(group: &mut BenchmarkGroup<WallTime>, font_label: &str, font:
         })
     });
 }
-
-#[cfg(feature = "freetype_benchmark")]
-fn setup_freetype(group: &mut BenchmarkGroup<WallTime>, font_label: &str, font: &[u8]) {
-    use freetype::Library;
-
-    let parameter = format!("freetype {}", font_label);
-    group.bench_function(BenchmarkId::from_parameter(parameter), |b| {
-        b.iter(|| {
-            let lib = Library::init().unwrap();
-            let font = font.to_vec();
-            let face = lib.new_memory_face(font, 0).unwrap();
-            face.set_char_size(0, (SIZE * 0.75 * 64.0) as isize, 96, 96).unwrap();
-            face.load_char(CHARACTER as usize, freetype::face::LoadFlag::RENDER).unwrap();
-            let glyph = face.glyph();
-            glyph.bitmap()
-        })
-    });
-}
-
-#[cfg(not(feature = "freetype_benchmark"))]
-fn setup_freetype(_: &mut BenchmarkGroup<WallTime>, _: &str, _: &[u8]) {}
 
 criterion_group!(benches, setup);
 criterion_main!(benches);
