@@ -210,6 +210,7 @@ pub struct Geometry {
     area: f32,
     reverse_points: bool,
     max_area: f32,
+    contour_tolerance_squared: f32,
     contour_points: Vec<Point>,
     contour_ends: Vec<usize>,
     contour_start: usize,
@@ -257,7 +258,6 @@ impl ttf_parser::OutlineBuilder for Geometry {
 
         let curve = QuadCurve::new(self.previous_point, control_point, next_point);
         let mut stack = vec![Segment::new(self.previous_point, 0.0, next_point, 1.0)];
-        let mut flattened = Vec::new();
         while let Some(seg) = stack.pop() {
             let bt = (seg.at + seg.ct) * 0.5;
             let b = curve.point(bt);
@@ -268,12 +268,9 @@ impl ttf_parser::OutlineBuilder for Geometry {
                 stack.push(Segment::new(b, bt, seg.c, seg.ct));
             } else {
                 self.push_edge(seg.a, seg.c);
-                flattened.push(seg.c);
             }
         }
-        for point in flattened.into_iter().rev() {
-            self.push_contour_point(point);
-        }
+        self.flatten_quad_contour(curve);
 
         self.previous_point = next_point;
     }
@@ -285,7 +282,6 @@ impl ttf_parser::OutlineBuilder for Geometry {
 
         let curve = CubeCurve::new(self.previous_point, first_control, second_control, next_point);
         let mut stack = vec![Segment::new(self.previous_point, 0.0, next_point, 1.0)];
-        let mut flattened = Vec::new();
         while let Some(seg) = stack.pop() {
             let bt = (seg.at + seg.ct) * 0.5;
             let b = curve.point(bt);
@@ -296,12 +292,9 @@ impl ttf_parser::OutlineBuilder for Geometry {
                 stack.push(Segment::new(b, bt, seg.c, seg.ct));
             } else {
                 self.push_edge(seg.a, seg.c);
-                flattened.push(seg.c);
             }
         }
-        for point in flattened.into_iter().rev() {
-            self.push_contour_point(point);
-        }
+        self.flatten_cube_contour(curve);
         self.previous_point = next_point;
     }
 
@@ -325,6 +318,10 @@ impl Geometry {
     pub fn new(scale: f32, units_per_em: f32) -> Geometry {
         const ERROR_THRESHOLD: f32 = 3.0; // In pixels.
         let max_area = ERROR_THRESHOLD * 2.0 * (units_per_em / scale);
+        // Ordered contours are also used to construct offsets. Keep their error substantially
+        // below one output pixel and test cubic control points rather than only the midpoint.
+        const CONTOUR_ERROR: f32 = 0.2;
+        let contour_tolerance = CONTOUR_ERROR * units_per_em / scale;
 
         Geometry {
             v_lines: Vec::new(),
@@ -340,9 +337,49 @@ impl Geometry {
             area: 0.0,
             reverse_points: false,
             max_area,
+            contour_tolerance_squared: contour_tolerance * contour_tolerance,
             contour_points: Vec::new(),
             contour_ends: Vec::new(),
             contour_start: 0,
+        }
+    }
+
+    fn flatten_quad_contour(&mut self, curve: QuadCurve) {
+        const MAX_DEPTH: u8 = 16;
+        let mut stack = vec![(curve, 0u8)];
+        while let Some((curve, depth)) = stack.pop() {
+            if depth >= MAX_DEPTH
+                || point_line_distance_squared(curve.b, curve.a, curve.c) <= self.contour_tolerance_squared
+            {
+                self.push_contour_point(curve.c);
+                continue;
+            }
+            let ab = midpoint(curve.a, curve.b);
+            let bc = midpoint(curve.b, curve.c);
+            let center = midpoint(ab, bc);
+            stack.push((QuadCurve::new(center, bc, curve.c), depth + 1));
+            stack.push((QuadCurve::new(curve.a, ab, center), depth + 1));
+        }
+    }
+
+    fn flatten_cube_contour(&mut self, curve: CubeCurve) {
+        const MAX_DEPTH: u8 = 16;
+        let mut stack = vec![(curve, 0u8)];
+        while let Some((curve, depth)) = stack.pop() {
+            let flatness = point_line_distance_squared(curve.b, curve.a, curve.d)
+                .max(point_line_distance_squared(curve.c, curve.a, curve.d));
+            if depth >= MAX_DEPTH || flatness <= self.contour_tolerance_squared {
+                self.push_contour_point(curve.d);
+                continue;
+            }
+            let ab = midpoint(curve.a, curve.b);
+            let bc = midpoint(curve.b, curve.c);
+            let cd = midpoint(curve.c, curve.d);
+            let abc = midpoint(ab, bc);
+            let bcd = midpoint(bc, cd);
+            let center = midpoint(abc, bcd);
+            stack.push((CubeCurve::new(center, bcd, cd, curve.d), depth + 1));
+            stack.push((CubeCurve::new(curve.a, ab, abc, center), depth + 1));
         }
     }
 
@@ -422,5 +459,25 @@ impl Geometry {
         if y > bounds.ymax {
             bounds.ymax = y;
         }
+    }
+}
+
+#[inline]
+fn midpoint(a: Point, b: Point) -> Point {
+    Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
+}
+
+#[inline]
+fn point_line_distance_squared(point: Point, start: Point, end: Point) -> f32 {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f32::EPSILON {
+        let px = point.x - start.x;
+        let py = point.y - start.y;
+        px * px + py * py
+    } else {
+        let cross = (point.x - start.x) * dy - (point.y - start.y) * dx;
+        cross * cross / length_squared
     }
 }

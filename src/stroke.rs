@@ -144,7 +144,7 @@ impl StrokePathBuilder {
 
     fn add_contour(&mut self, contour: &[Point], scale: f32, radius: f32, settings: StrokeSettings) {
         self.clean.clear();
-        self.clean.reserve(contour.len().saturating_sub(self.clean.capacity()));
+        self.clean.reserve(contour.len());
         for point in contour {
             let scaled = Point::new(point.x * scale, point.y * scale);
             if self.clean.last().map_or(true, |last| distance_squared(*last, scaled) > POINT_EPSILON_SQUARED)
@@ -163,8 +163,8 @@ impl StrokePathBuilder {
 
         self.left.clear();
         self.right.clear();
-        self.left.reserve(self.clean.len().saturating_sub(self.left.capacity()));
-        self.right.reserve(self.clean.len().saturating_sub(self.right.capacity()));
+        self.left.reserve(self.clean.len());
+        self.right.reserve(self.clean.len());
         build_border(&self.clean, 1.0, radius, settings, &mut self.left);
         build_border(&self.clean, -1.0, radius, settings, &mut self.right);
 
@@ -216,8 +216,6 @@ impl StrokePathBuilder {
             }
             start = end;
         }
-        v_lines.shrink_to_fit();
-        m_lines.shrink_to_fit();
         StrokeGeometry {
             v_lines,
             m_lines,
