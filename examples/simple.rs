@@ -1,5 +1,5 @@
 //! Generates grayscale output for Fontdue. There are also examples for doing a similar operation in
-//! Rusttype and FreeType.
+//! Rusttype.
 
 use std::fs::File;
 use std::io::Write;
@@ -53,24 +53,4 @@ pub fn generate_rusttype() {
     let mut o = File::create("rusttype.pgm").unwrap();
     let _ = o.write(format!("P5\n{} {}\n255\n", width, height).as_bytes());
     let _ = o.write(&bitmap);
-}
-
-#[cfg(feature = "freetype_benchmark")]
-pub fn generate_freetype() {
-    use freetype::Library;
-
-    // Loading and rasterization
-    let font = PATH;
-    let lib = Library::init().unwrap();
-    let font = font.to_vec();
-    let face = lib.new_memory_face(font, 0).unwrap();
-    face.set_char_size(0, (SIZE * 0.75 * 64.0) as isize, 96, 96).unwrap();
-    face.load_char(CHARACTER as usize, freetype::face::LoadFlag::RENDER).unwrap();
-    let glyph = face.glyph();
-    let bitmap = glyph.bitmap();
-
-    // Output
-    let mut o = File::create("freetype.pgm").unwrap();
-    let _ = o.write(format!("P5\n{} {}\n255\n", bitmap.width(), bitmap.rows()).as_bytes());
-    let _ = o.write(bitmap.buffer());
 }

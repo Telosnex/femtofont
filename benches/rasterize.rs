@@ -12,7 +12,7 @@ const FONTS: [(&str, &[u8]); 2] = [
     ("opentype", include_bytes!("../resources/fonts/Exo2-Regular.otf")),
 ];
 const SIZES: [f32; 1] = [200.0];
-const FUNCTIONS: [SetupFunction; 4] = [setup_rusttype, setup_ab_glyph, setup_femtofont, setup_freetype];
+const FUNCTIONS: [SetupFunction; 3] = [setup_rusttype, setup_ab_glyph, setup_femtofont];
 
 fn setup(c: &mut Criterion) {
     let mut group = c.benchmark_group("rasterize");
@@ -85,7 +85,7 @@ fn setup_femtofont(group: &mut BenchmarkGroup<WallTime>, font_label: &str, font:
         scale: size,
         ..FontSettings::default()
     };
-    let mut font = Font::from_bytes(font, settings).unwrap();
+    let font = Font::from_bytes(font, settings).unwrap();
     let parameter = format!("femtofont {} {}px", font_label, size);
     group.bench_function(BenchmarkId::from_parameter(parameter), |b| {
         b.iter(|| {
@@ -99,31 +99,76 @@ fn setup_femtofont(group: &mut BenchmarkGroup<WallTime>, font_label: &str, font:
     });
 }
 
-#[cfg(feature = "freetype_benchmark")]
-fn setup_freetype(group: &mut BenchmarkGroup<WallTime>, font_label: &str, font: &[u8], size: f32) {
-    use freetype::Library;
-    let lib = Library::init().unwrap();
-    let font = font.to_vec();
-    let face = lib.new_memory_face(font, 0).unwrap();
+fn setup_strokes(c: &mut Criterion) {
+    use femtofont::{Font, FontSettings, LineJoin, StrokeSettings};
 
-    let parameter = format!("freetype {} {}px", font_label, size);
-    group.bench_function(BenchmarkId::from_parameter(parameter), |b| {
-        b.iter(|| {
-            let mut len = 0;
-            face.set_char_size(0, (size * 0.75 * 64.0) as isize, 96, 96).unwrap();
-            for character in MESSAGE.chars() {
-                face.load_char(character as usize, freetype::face::LoadFlag::RENDER).unwrap();
-                let glyph = face.glyph();
-                let bitmap = glyph.bitmap();
-                len += bitmap.width() * bitmap.rows();
+    let mut group = c.benchmark_group("stroke");
+    group.measurement_time(core::time::Duration::from_secs(3));
+    let bytes = FONTS[0].1;
+    for size in [16.0, 40.0, 200.0] {
+        for cached in [false, true] {
+            let font = Font::from_bytes(
+                bytes,
+                FontSettings {
+                    scale: size,
+                    cachesize: if cached {
+                        128
+                    } else {
+                        0
+                    },
+                    ..FontSettings::default()
+                },
+            )
+            .unwrap();
+            if cached {
+                for character in MESSAGE.chars() {
+                    let _ = font.metrics(character, size);
+                }
             }
-            len
-        })
-    });
+            let cache_label = if cached {
+                "cached"
+            } else {
+                "uncached"
+            };
+            let label = format!("round {}px {}", size, cache_label);
+            group.bench_function(BenchmarkId::from_parameter(label), |b| {
+                b.iter(|| {
+                    let mut len = 0;
+                    for character in MESSAGE.chars() {
+                        let (_, bitmap) = font.rasterize_stroke(character, size, StrokeSettings::new(3.0));
+                        len += bitmap.len();
+                    }
+                    len
+                })
+            });
+        }
+    }
+
+    let font = Font::from_bytes(
+        bytes,
+        FontSettings {
+            scale: 40.0,
+            cachesize: 128,
+            ..FontSettings::default()
+        },
+    )
+    .unwrap();
+    for join in [LineJoin::Round, LineJoin::Bevel, LineJoin::Miter] {
+        let label = format!("join {:?}", join);
+        group.bench_function(BenchmarkId::from_parameter(label), |b| {
+            b.iter(|| {
+                let mut len = 0;
+                let settings = StrokeSettings::new(4.0).with_line_join(join);
+                for character in MESSAGE.chars() {
+                    let (_, bitmap) = font.rasterize_stroke(character, 40.0, settings);
+                    len += bitmap.len();
+                }
+                len
+            })
+        });
+    }
+    group.finish();
 }
 
-#[cfg(not(feature = "freetype_benchmark"))]
-fn setup_freetype(_: &mut BenchmarkGroup<WallTime>, _: &str, _: &[u8], _: f32) {}
-
-criterion_group!(benches, setup);
+criterion_group!(benches, setup, setup_strokes);
 criterion_main!(benches);

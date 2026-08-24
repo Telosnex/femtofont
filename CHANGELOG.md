@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+- Centered glyph outline stroking with round, bevel, and miter joins.
+- Aligned fill/stroke masks and stroke-only APIs for grayscale and RGB subpixel rendering.
+
+### Changed
+- Cached glyph geometry is shared instead of deep-cloned on every cache hit.
+
+
 ## [0.9.3] - 2025-02-12
 ### Changes
 - Update `hashbrown` to 0.15 #157

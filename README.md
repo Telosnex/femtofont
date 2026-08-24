@@ -20,7 +20,7 @@ Using `eg-femtofont` on `embedded-graphics`:
 ```rust
 // load the font from raw data
 let font = include_bytes!("assets/path_to_font.ttf") as &[u8];
-let font = femtofont::Font::from_bytes_with_weight(font, 600.0, femtofont::FontSettings::default()).unwrap();
+let font = femtofont::Font::from_bytes_and_weight(font, 600.0, femtofont::FontSettings::default()).unwrap();
 
 // Red text anti-aliased as if it were on a blue background
 let style = eg_femtofont::FemtoFontTextStyle::with_aa_color(&font, Rgb888::RED, Rgb888::BLUE, 20);
@@ -29,6 +29,30 @@ let rendered_text = Text::new("FemtoFont", Point::new(100, 100), style);
 // Draw
 rendered_text.draw(&mut display).unwrap();
 ```
+
+## Stroked text
+
+FemtoFont can return aligned fill and centered-stroke masks. The stroke width is measured in output
+pixels and does not change glyph advances or text wrapping.
+
+```rust
+use femtofont::{LineJoin, StrokeSettings};
+
+let glyph = font.rasterize_with_stroke(
+    'A',
+    40.0,
+    StrokeSettings::new(3.0)
+        .with_line_join(LineJoin::Miter)
+        .with_miter_limit(4.0),
+);
+
+assert_eq!(glyph.fill.len(), glyph.metrics.width * glyph.metrics.height);
+assert_eq!(glyph.stroke.len(), glyph.fill.len());
+```
+
+Paint `glyph.stroke` first and `glyph.fill` second to use different colors. Stroke-only and RGB
+subpixel variants are also available. For a complete compositing example, run
+`cargo run --example stroke --release`.
 
 ## Goals
 
@@ -43,6 +67,7 @@ rendered_text.draw(&mut display).unwrap();
 - Using the portable implementations of `simd` and floating point math inside `core` instead of manually optimizing them
 - Removing most pre-render caching and replacing it with optional render-time caching
 - Adding support for variable fonts by coupling the API closer to `ttf_parser`'s
+- Centered glyph outline strokes with round, bevel, and miter joins
 - `Arc`-ing font faces to preserve stack space and to allow multiple `Font`'s to use the same `Face`
 
 ## Other font rendering crates
