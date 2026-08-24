@@ -179,10 +179,24 @@ impl StrokePathBuilder {
         let left_valid = !left_is_inner || signed_area(&self.left) * source_area > 0.0;
         let right_valid = !right_is_inner || signed_area(&self.right) * source_area > 0.0;
         let inward_must_collapse = radius * 2.0 >= minimum_extent(&self.clean);
-        if !left_valid || !right_valid || inward_must_collapse {
-            // Offset borders are the fast path, but an inward border can invert after a thick
-            // stroke consumes a narrow contour. A primitive union has bounded local geometry and
-            // remains correct after that topology change.
+        if inward_must_collapse {
+            // No interior point can remain farther than the radius from this contour. Retain the
+            // outward offset and add the source contour with union winding; this is both cheaper
+            // and more stable than following an inward border through its collapse.
+            if !left_is_inner && self.left.len() >= 2 {
+                self.points.extend_from_slice(&self.left);
+                self.contour_ends.push(self.points.len());
+            }
+            if !right_is_inner && self.right.len() >= 2 {
+                self.points.extend(self.right.iter().rev().copied());
+                self.contour_ends.push(self.points.len());
+            }
+            append_clockwise(&mut self.points, &mut self.contour_ends, &self.clean);
+            return;
+        }
+        if !left_valid || !right_valid {
+            // Offset borders are the fast path, but an inward border can occasionally invert
+            // before its bounding-box limit. Bounded local primitives handle that transition.
             add_primitive_stroke(&self.clean, radius, settings, &mut self.points, &mut self.contour_ends);
             return;
         }
