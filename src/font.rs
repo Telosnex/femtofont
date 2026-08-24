@@ -1,12 +1,12 @@
 use crate::layout::GlyphRasterConfig;
-use crate::math::{Geometry, Line};
+use crate::math::{Geometry, Line, Point};
 use crate::raster::Raster;
 use crate::unicode;
 use crate::FontResult;
 use alloc::string::String;
 use alloc::sync::Arc;
-use core::cell::RefCell;
 use alloc::vec::*;
+use core::cell::RefCell;
 use core::f32::math::*;
 use ttf_parser::{Face, FaceParsingError, GlyphId, Tag};
 
@@ -134,6 +134,8 @@ pub(crate) struct Glyph {
     advance_width: f32,
     advance_height: f32,
     pub bounds: OutlineBounds,
+    pub contour_points: Vec<Point>,
+    pub contour_ends: Vec<usize>,
 }
 
 impl Default for Glyph {
@@ -144,6 +146,8 @@ impl Default for Glyph {
             advance_width: 0.0,
             advance_height: 0.0,
             bounds: OutlineBounds::default(),
+            contour_points: Vec::new(),
+            contour_ends: Vec::new(),
         }
     }
 }
@@ -187,7 +191,7 @@ impl GlyphCache {
         Self {
             age: 0,
             cache: Vec::with_capacity(cap),
-            cap
+            cap,
         }
     }
 
@@ -288,11 +292,14 @@ impl<'a> Font<'a> {
         })
     }
 
-
     /// Constructs a font from an array of bytes and a weight.
     ///
     /// For more precise control, see `ttf_parser` `Face::set_variation` and `Font::from_face`
-    pub fn from_bytes_and_weight(data: &'a [u8], weight: f32, settings: FontSettings) -> FontResult<Font<'a>> {
+    pub fn from_bytes_and_weight(
+        data: &'a [u8],
+        weight: f32,
+        settings: FontSettings,
+    ) -> FontResult<Font<'a>> {
         let mut face = match Face::parse(data, settings.collection_index) {
             Ok(f) => f,
             Err(e) => return Err(convert_error(e)),
@@ -331,9 +338,9 @@ impl<'a> Font<'a> {
         if let Some(g) = cache.search(idx) {
             Ok(g)
         } else {
-            let gen = self.generate_new_glyph(idx)?;
-            cache.insert(idx, gen.clone());
-            Ok(gen)
+            let generated = self.generate_new_glyph(idx)?;
+            cache.insert(idx, generated.clone());
+            Ok(generated)
         }
     }
 
@@ -352,7 +359,6 @@ impl<'a> Font<'a> {
                 .sum(),
         ) // Sum values from all matching subtables
     }
-
 
     /// Returns the font's face name at a certain ID if it has one.
     /// See https://learn.microsoft.com/en-us/typography/opentype/spec/name#name-ids for more info.

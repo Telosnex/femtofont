@@ -164,12 +164,12 @@ impl Line {
         let tdy = 1.0 / dy;
 
         pub fn new_u32(x0: u32, x1: u32, x2: u32, x3: u32) -> f32x4 {
-                f32x4::from_array([
-                    f32::from_bits(x0),
-                    f32::from_bits(x1),
-                    f32::from_bits(x2),
-                    f32::from_bits(x3),
-                ])
+            f32x4::from_array([
+                f32::from_bits(x0),
+                f32::from_bits(x1),
+                f32::from_bits(x2),
+                f32::from_bits(x3),
+            ])
         }
 
         Line {
@@ -210,6 +210,9 @@ pub struct Geometry {
     area: f32,
     reverse_points: bool,
     max_area: f32,
+    contour_points: Vec<Point>,
+    contour_ends: Vec<usize>,
+    contour_start: usize,
 }
 
 struct Segment {
@@ -232,9 +235,14 @@ impl Segment {
 
 impl ttf_parser::OutlineBuilder for Geometry {
     fn move_to(&mut self, x0: f32, y0: f32) {
+        // Fonts should close every contour, but retain a malformed open contour rather than
+        // joining it to the next one.
+        self.finish_contour();
         let next_point = Point::new(x0, y0);
         self.start_point = next_point;
         self.previous_point = next_point;
+        self.contour_start = self.contour_points.len();
+        self.contour_points.push(next_point);
     }
 
     fn line_to(&mut self, x0: f32, y0: f32) {
@@ -249,6 +257,7 @@ impl ttf_parser::OutlineBuilder for Geometry {
 
         let curve = QuadCurve::new(self.previous_point, control_point, next_point);
         let mut stack = vec![Segment::new(self.previous_point, 0.0, next_point, 1.0)];
+        let mut flattened = Vec::new();
         while let Some(seg) = stack.pop() {
             let bt = (seg.at + seg.ct) * 0.5;
             let b = curve.point(bt);
@@ -258,8 +267,12 @@ impl ttf_parser::OutlineBuilder for Geometry {
                 stack.push(Segment::new(seg.a, seg.at, b, bt));
                 stack.push(Segment::new(b, bt, seg.c, seg.ct));
             } else {
-                self.push(seg.a, seg.c);
+                self.push_edge(seg.a, seg.c);
+                flattened.push(seg.c);
             }
+        }
+        for point in flattened.into_iter().rev() {
+            self.push_contour_point(point);
         }
 
         self.previous_point = next_point;
@@ -272,6 +285,7 @@ impl ttf_parser::OutlineBuilder for Geometry {
 
         let curve = CubeCurve::new(self.previous_point, first_control, second_control, next_point);
         let mut stack = vec![Segment::new(self.previous_point, 0.0, next_point, 1.0)];
+        let mut flattened = Vec::new();
         while let Some(seg) = stack.pop() {
             let bt = (seg.at + seg.ct) * 0.5;
             let b = curve.point(bt);
@@ -281,8 +295,12 @@ impl ttf_parser::OutlineBuilder for Geometry {
                 stack.push(Segment::new(seg.a, seg.at, b, bt));
                 stack.push(Segment::new(b, bt, seg.c, seg.ct));
             } else {
-                self.push(seg.a, seg.c);
+                self.push_edge(seg.a, seg.c);
+                flattened.push(seg.c);
             }
+        }
+        for point in flattened.into_iter().rev() {
+            self.push_contour_point(point);
         }
         self.previous_point = next_point;
     }
@@ -291,6 +309,13 @@ impl ttf_parser::OutlineBuilder for Geometry {
         if self.start_point != self.previous_point {
             self.push(self.previous_point, self.start_point);
         }
+        // The closing point duplicates the first point; closure is represented by contour_ends.
+        if self.contour_points.last() == Some(&self.start_point)
+            && self.contour_points.len() > self.contour_start + 1
+        {
+            self.contour_points.pop();
+        }
+        self.finish_contour();
         self.previous_point = self.start_point;
     }
 }
@@ -315,10 +340,26 @@ impl Geometry {
             area: 0.0,
             reverse_points: false,
             max_area,
+            contour_points: Vec::new(),
+            contour_ends: Vec::new(),
+            contour_start: 0,
         }
     }
 
     fn push(&mut self, start: Point, end: Point) {
+        self.push_contour_point(end);
+        self.push_edge(start, end);
+    }
+
+    fn push_contour_point(&mut self, point: Point) {
+        // Keep complete ordered contours for operations such as stroking. Filled scan conversion
+        // can discard horizontal edges, but an offset curve cannot.
+        if self.contour_points.last() != Some(&point) {
+            self.contour_points.push(point);
+        }
+    }
+
+    fn push_edge(&mut self, start: Point, end: Point) {
         // We're using to_bits here because we only care if they're _exactly_ the same.
         if start.y.to_bits() != end.y.to_bits() {
             self.area += (end.y - start.y) * (end.x + start.x);
@@ -332,7 +373,18 @@ impl Geometry {
         }
     }
 
+    fn finish_contour(&mut self) {
+        let len = self.contour_points.len();
+        if len > self.contour_start + 1 {
+            self.contour_ends.push(len);
+        } else if len > self.contour_start {
+            self.contour_points.truncate(self.contour_start);
+        }
+        self.contour_start = self.contour_points.len();
+    }
+
     pub(crate) fn finalize(mut self, glyph: &mut Glyph) {
+        self.finish_contour();
         if self.v_lines.is_empty() && self.m_lines.is_empty() {
             self.effective_bounds = AABB::default();
         } else {
@@ -345,6 +397,10 @@ impl Geometry {
         }
         glyph.v_lines = self.v_lines;
         glyph.m_lines = self.m_lines;
+        self.contour_points.shrink_to_fit();
+        self.contour_ends.shrink_to_fit();
+        glyph.contour_points = self.contour_points;
+        glyph.contour_ends = self.contour_ends;
         glyph.bounds = OutlineBounds {
             xmin: self.effective_bounds.xmin,
             ymin: self.effective_bounds.ymin,
