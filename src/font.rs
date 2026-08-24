@@ -8,6 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec::*;
 use core::cell::RefCell;
 use core::f32::math::*;
+use core::ops::Deref;
 use ttf_parser::{Face, FaceParsingError, GlyphId, Tag};
 
 /// Defines the bounds for a glyph's outline in subpixels. A glyph's outline is always contained in
@@ -182,7 +183,7 @@ struct GlyphCache {
     /// Number of times the cache has been indexed
     age: usize,
     /// Glyph index, glyph, age of creation
-    cache: Vec<(u16, Glyph, usize)>,
+    cache: Vec<(u16, Arc<Glyph>, usize)>,
     cap: usize,
 }
 
@@ -196,24 +197,24 @@ impl GlyphCache {
     }
 
     /// Accesses the cache while also mutating the age
-    fn search(&mut self, idx: u16) -> Option<Glyph> {
-        self.age += 1;
-        self.silent_search(idx)
-    }
-
-    /// Attempts to access the cache but without mutating the age
-    #[allow(dead_code)]
-    fn silent_search(&self, idx: u16) -> Option<Glyph> {
-        for i in 0..self.cache.len() {
-            if self.cache[i].0 == idx {
-                return Some(self.cache[i].1.clone());
+    fn search(&mut self, idx: u16) -> Option<Arc<Glyph>> {
+        self.age = self.age.wrapping_add(1);
+        for entry in &mut self.cache {
+            if entry.0 == idx {
+                entry.2 = self.age;
+                return Some(Arc::clone(&entry.1));
             }
         }
-
         None
     }
 
-    fn insert(&mut self, idx: u16, g: Glyph) {
+    /// Attempts to access the cache but without mutating its LRU state.
+    #[allow(dead_code)]
+    fn silent_search(&self, idx: u16) -> Option<Arc<Glyph>> {
+        self.cache.iter().find(|entry| entry.0 == idx).map(|entry| Arc::clone(&entry.1))
+    }
+
+    fn insert(&mut self, idx: u16, g: Arc<Glyph>) {
         if self.cache.len() < self.cap {
             self.cache.push((idx, g, self.age));
         } else {
@@ -227,6 +228,22 @@ impl GlyphCache {
             }
 
             self.cache[oldest_idx] = (idx, g, self.age);
+        }
+    }
+}
+
+enum GlyphRef {
+    Owned(Glyph),
+    Cached(Arc<Glyph>),
+}
+
+impl Deref for GlyphRef {
+    type Target = Glyph;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(glyph) => glyph,
+            Self::Cached(glyph) => glyph,
         }
     }
 }
@@ -286,7 +303,7 @@ impl<'a> Font<'a> {
         Ok(Font {
             face,
             vertical_line_metrics,
-            cache: RefCell::new(GlyphCache::new(40)),
+            cache: RefCell::new(GlyphCache::new(settings.cachesize)),
             cachesize: settings.cachesize,
             scale: settings.scale,
         })
@@ -330,17 +347,17 @@ impl<'a> Font<'a> {
         Ok(glyph)
     }
 
-    fn get_glyph(&self, idx: u16) -> Result<Glyph, &'static str> {
+    fn get_glyph(&self, idx: u16) -> Result<GlyphRef, &'static str> {
         if self.cachesize == 0 {
-            return self.generate_new_glyph(idx);
+            return self.generate_new_glyph(idx).map(GlyphRef::Owned);
         }
         let mut cache = self.cache.borrow_mut();
-        if let Some(g) = cache.search(idx) {
-            Ok(g)
+        if let Some(glyph) = cache.search(idx) {
+            Ok(GlyphRef::Cached(glyph))
         } else {
-            let generated = self.generate_new_glyph(idx)?;
-            cache.insert(idx, generated.clone());
-            Ok(generated)
+            let generated = Arc::new(self.generate_new_glyph(idx)?);
+            cache.insert(idx, Arc::clone(&generated));
+            Ok(GlyphRef::Cached(generated))
         }
     }
 
