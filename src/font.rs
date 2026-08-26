@@ -1,5 +1,5 @@
 use crate::layout::GlyphRasterConfig;
-use crate::math::{Geometry, Line, Point};
+use crate::math::{Geometry, Line, Point, PreparedLine};
 use crate::raster::Raster;
 use crate::stroke::{StrokeGeometry, StrokeSettings};
 use crate::unicode;
@@ -147,8 +147,7 @@ impl LineMetrics {
 /// Stores compiled geometry and metric information.
 #[derive(Clone)]
 pub(crate) struct Glyph {
-    pub v_lines: Vec<Line>,
-    pub m_lines: Vec<Line>,
+    pub(crate) lines: GlyphLines,
     advance_width: f32,
     advance_height: f32,
     pub bounds: OutlineBounds,
@@ -159,8 +158,7 @@ pub(crate) struct Glyph {
 impl Default for Glyph {
     fn default() -> Self {
         Glyph {
-            v_lines: Vec::new(),
-            m_lines: Vec::new(),
+            lines: GlyphLines::default(),
             advance_width: 0.0,
             advance_height: 0.0,
             bounds: OutlineBounds::default(),
@@ -168,6 +166,38 @@ impl Default for Glyph {
             contour_ends: Vec::new(),
         }
     }
+}
+
+#[derive(Clone)]
+pub(crate) enum GlyphLines {
+    Prepared {
+        v: Vec<PreparedLine>,
+        m: Vec<PreparedLine>,
+    },
+    Compact {
+        v: Vec<Line>,
+        m: Vec<Line>,
+    },
+}
+
+impl Default for GlyphLines {
+    fn default() -> Self {
+        Self::Compact {
+            v: Vec::new(),
+            m: Vec::new(),
+        }
+    }
+}
+
+/// Storage strategy for temporary and cached fill-outline edges.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GeometryStorage {
+    /// Retain raster-ready edge parameters for maximum draw throughput.
+    #[default]
+    Prepared,
+    /// Retain only edge coordinates and derive raster parameters while drawing.
+    /// This reduces edge storage from 64 to 16 bytes.
+    Compact,
 }
 
 /// Settings for controlling specific font and layout behavior.
@@ -183,6 +213,13 @@ pub struct FontSettings {
     pub scale: f32,
     /// The size of the cache, completely uncached if 0 (Default 0)
     pub cachesize: usize,
+    /// Representation used for fill-outline edges. (Default Prepared)
+    pub geometry_storage: GeometryStorage,
+    /// Whether to retain dense ordered contours required by vector-stroke APIs.
+    /// Fill rasterization does not use them. When false, `rasterize_with_stroke`
+    /// and its indexed variants still return the normal fill but a fully
+    /// transparent stroke layer. (Default true)
+    pub retain_stroke_geometry: bool,
 }
 
 impl Default for FontSettings {
@@ -191,6 +228,8 @@ impl Default for FontSettings {
             collection_index: 0,
             scale: 40.0,
             cachesize: 0,
+            geometry_storage: GeometryStorage::Prepared,
+            retain_stroke_geometry: true,
         }
     }
 }
@@ -274,6 +313,8 @@ pub struct Font<'a> {
     scale: f32,
     cachesize: usize,
     cache: RefCell<GlyphCache>,
+    geometry_storage: GeometryStorage,
+    retain_stroke_geometry: bool,
 }
 
 impl<'a> core::fmt::Debug for Font<'a> {
@@ -323,6 +364,8 @@ impl<'a> Font<'a> {
             cache: RefCell::new(GlyphCache::new(settings.cachesize)),
             cachesize: settings.cachesize,
             scale: settings.scale,
+            geometry_storage: settings.geometry_storage,
+            retain_stroke_geometry: settings.retain_stroke_geometry,
         })
     }
 
@@ -358,9 +401,10 @@ impl<'a> Font<'a> {
             glyph.advance_height = advance_height as f32;
         }
 
-        let mut geometry = Geometry::new(self.scale, self.face.units_per_em() as f32);
+        let mut geometry =
+            Geometry::new(self.scale, self.face.units_per_em() as f32, self.retain_stroke_geometry);
         self.face.outline_glyph(glyph_id, &mut geometry);
-        geometry.finalize(&mut glyph);
+        geometry.finalize(&mut glyph, self.geometry_storage);
         Ok(glyph)
     }
 

@@ -4,8 +4,8 @@
  * is safe. Please be aware of this.
  */
 
-use crate::math::Line;
-use crate::Glyph;
+use crate::math::{Line, PreparedLine};
+use crate::{Glyph, GlyphLines};
 use alloc::vec;
 use alloc::vec::*;
 use core::f32::math::*;
@@ -43,7 +43,45 @@ impl Raster {
     }
 
     pub(crate) fn draw(&mut self, glyph: &Glyph, scale_x: f32, scale_y: f32, offset_x: f32, offset_y: f32) {
-        self.draw_lines(&glyph.v_lines, &glyph.m_lines, scale_x, scale_y, offset_x, offset_y);
+        match &glyph.lines {
+            GlyphLines::Prepared {
+                v,
+                m,
+            } => {
+                self.draw_prepared_lines(v, m, scale_x, scale_y, offset_x, offset_y);
+            }
+            GlyphLines::Compact {
+                v,
+                m,
+            } => {
+                self.draw_lines(v, m, scale_x, scale_y, offset_x, offset_y);
+            }
+        }
+    }
+
+    fn draw_prepared_lines(
+        &mut self,
+        v_lines: &[PreparedLine],
+        m_lines: &[PreparedLine],
+        scale_x: f32,
+        scale_y: f32,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
+        let params = f32x4::from_array([1.0 / scale_x, 1.0 / scale_y, scale_x, scale_y]);
+        let scale = f32x4::from_array([scale_x, scale_y, scale_x, scale_y]);
+        let offset = f32x4::from_array([offset_x, offset_y, offset_x, offset_y]);
+        for line in v_lines {
+            let mut line = *line;
+            line.coords = line.coords * scale + offset;
+            self.v_line(&line);
+        }
+        for line in m_lines {
+            let mut line = *line;
+            line.coords = line.coords * scale + offset;
+            line.params *= params;
+            self.m_line(&line);
+        }
     }
 
     pub(crate) fn draw_lines(
@@ -59,10 +97,15 @@ impl Raster {
         let scale = f32x4::from_array([scale_x, scale_y, scale_x, scale_y]);
         let offset = f32x4::from_array([offset_x, offset_y, offset_x, offset_y]);
         for line in v_lines {
-            self.v_line(line, line.coords * scale + offset);
+            let mut line = line.prepare();
+            line.coords = line.coords * scale + offset;
+            self.v_line(&line);
         }
         for line in m_lines {
-            self.m_line(line, line.coords * scale + offset, line.params * params);
+            let mut line = line.prepare();
+            line.coords = line.coords * scale + offset;
+            line.params *= params;
+            self.m_line(&line);
         }
     }
 
@@ -80,9 +123,9 @@ impl Raster {
         // self.a[index + 1] += m;
     }
 
-    fn v_line(&mut self, line: &Line, coords: f32x4) {
-        let [x0, y0, _, y1] = coords.as_array();
-        let temp = trunc_simd(sub_integer(coords, line.nudge));
+    fn v_line(&mut self, line: &PreparedLine) {
+        let [x0, y0, _, y1] = line.coords.as_array();
+        let temp = trunc_simd(sub_integer(line.coords, line.nudge));
         let [start_x, start_y, end_x, end_y] = temp.as_array();
         let [_, mut target_y, _, _] = (temp + line.adjustment).as_array();
         let sy = 1f32.copysign(y1 - y0);
@@ -101,11 +144,11 @@ impl Raster {
         self.add((end_x + end_y * self.w as f32) as usize, y_prev - y1, mid_x);
     }
 
-    fn m_line(&mut self, line: &Line, coords: f32x4, params: f32x4) {
-        let [x0, y0, x1, y1] = coords.as_array();
-        let temp = trunc_simd(sub_integer(coords, line.nudge));
+    fn m_line(&mut self, line: &PreparedLine) {
+        let [x0, y0, x1, y1] = line.coords.as_array();
+        let temp = trunc_simd(sub_integer(line.coords, line.nudge));
         let [start_x, start_y, end_x, end_y] = temp.as_array();
-        let [tdx, tdy, dx, dy] = params.as_array();
+        let [tdx, tdy, dx, dy] = line.params.as_array();
         let [mut target_x, mut target_y, _, _] = (temp + line.adjustment).as_array();
         let sx = 1f32.copysign(*tdx);
         let sy = 1f32.copysign(*tdy);

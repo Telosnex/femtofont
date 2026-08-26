@@ -1,4 +1,4 @@
-use crate::{Glyph, OutlineBounds};
+use crate::{GeometryStorage, Glyph, GlyphLines, OutlineBounds};
 use alloc::vec;
 use alloc::vec::*;
 use core::simd::f32x4;
@@ -117,6 +117,13 @@ impl Point {
 pub struct Line {
     /// X0, Y0, X1, Y1.
     pub coords: f32x4,
+}
+
+/// Raster parameters derived from one compact outline edge. Keeping these on
+/// the stack during scan conversion makes retained glyph geometry 4x smaller.
+#[derive(Copy, Clone)]
+pub(crate) struct PreparedLine {
+    pub coords: f32x4,
     /// start_x_nudge, start_y_nudge, end_x_nudge, end_y_nudge.
     pub nudge: f32x4,
     /// x_first_adj, y_first_adj, none, none.
@@ -127,35 +134,42 @@ pub struct Line {
 
 impl Line {
     pub fn new(start: Point, end: Point) -> Line {
+        Line {
+            coords: f32x4::from_array([start.x, start.y, end.x, end.y]),
+        }
+    }
+
+    pub(crate) fn prepare(&self) -> PreparedLine {
+        let [start_x, start_y, end_x, end_y] = self.coords.to_array();
         // Floor adjustment and nudge: 0.0, 0
         // Ceil adjustment and nudge: 1.0, 1
         const FLOOR_NUDGE: u32 = 0;
         const CEIL_NUDGE: u32 = 1;
 
-        let (x_start_nudge, x_first_adj) = if end.x >= start.x {
+        let (x_start_nudge, x_first_adj) = if end_x >= start_x {
             (FLOOR_NUDGE, 1.0)
         } else {
             (CEIL_NUDGE, 0.0)
         };
-        let (y_start_nudge, y_first_adj) = if end.y >= start.y {
+        let (y_start_nudge, y_first_adj) = if end_y >= start_y {
             (FLOOR_NUDGE, 1.0)
         } else {
             (CEIL_NUDGE, 0.0)
         };
 
-        let x_end_nudge = if end.x > start.x {
+        let x_end_nudge = if end_x > start_x {
             CEIL_NUDGE
         } else {
             FLOOR_NUDGE
         };
-        let y_end_nudge = if end.y > start.y {
+        let y_end_nudge = if end_y > start_y {
             CEIL_NUDGE
         } else {
             FLOOR_NUDGE
         };
 
-        let dx = end.x - start.x;
-        let dy = end.y - start.y;
+        let dx = end_x - start_x;
+        let dy = end_y - start_y;
         let tdx = if dx == 0.0 {
             f32::MAX
         } else {
@@ -172,8 +186,8 @@ impl Line {
             ])
         }
 
-        Line {
-            coords: f32x4::from_array([start.x, start.y, end.x, end.y]),
+        PreparedLine {
+            coords: self.coords,
             nudge: new_u32(x_start_nudge, y_start_nudge, x_end_nudge, y_end_nudge),
             adjustment: f32x4::from_array([x_first_adj, y_first_adj, 0.0, 0.0]),
             params: f32x4::from_array([tdx, tdy, dx, dy]),
@@ -214,6 +228,7 @@ pub struct Geometry {
     contour_points: Vec<Point>,
     contour_ends: Vec<usize>,
     contour_start: usize,
+    retain_contours: bool,
 }
 
 struct Segment {
@@ -315,7 +330,7 @@ impl ttf_parser::OutlineBuilder for Geometry {
 
 impl Geometry {
     // Artisanal bespoke hand carved curves
-    pub fn new(scale: f32, units_per_em: f32) -> Geometry {
+    pub fn new(scale: f32, units_per_em: f32, retain_contours: bool) -> Geometry {
         const ERROR_THRESHOLD: f32 = 3.0; // In pixels.
         let max_area = ERROR_THRESHOLD * 2.0 * (units_per_em / scale);
         // Ordered contours are also used to construct offsets. Keep their error substantially
@@ -341,6 +356,7 @@ impl Geometry {
             contour_points: Vec::new(),
             contour_ends: Vec::new(),
             contour_start: 0,
+            retain_contours,
         }
     }
 
@@ -399,6 +415,9 @@ impl Geometry {
     }
 
     fn push_contour_point(&mut self, point: Point) {
+        if !self.retain_contours {
+            return;
+        }
         // Keep complete ordered contours for operations such as stroking. Filled scan conversion
         // can discard horizontal edges, but an offset curve cannot.
         if self.contour_points.last() != Some(&point) {
@@ -421,6 +440,9 @@ impl Geometry {
     }
 
     fn finish_contour(&mut self) {
+        if !self.retain_contours {
+            return;
+        }
         let len = self.contour_points.len();
         if len > self.contour_start + 1 {
             self.contour_ends.push(len);
@@ -430,7 +452,7 @@ impl Geometry {
         self.contour_start = self.contour_points.len();
     }
 
-    pub(crate) fn finalize(mut self, glyph: &mut Glyph) {
+    pub(crate) fn finalize(mut self, glyph: &mut Glyph, storage: GeometryStorage) {
         self.finish_contour();
         if self.v_lines.is_empty() && self.m_lines.is_empty() {
             self.effective_bounds = AABB::default();
@@ -439,13 +461,17 @@ impl Geometry {
             for line in self.v_lines.iter_mut().chain(self.m_lines.iter_mut()) {
                 line.reposition(self.effective_bounds, self.reverse_points);
             }
-            self.v_lines.shrink_to_fit();
-            self.m_lines.shrink_to_fit();
         }
-        glyph.v_lines = self.v_lines;
-        glyph.m_lines = self.m_lines;
-        self.contour_points.shrink_to_fit();
-        self.contour_ends.shrink_to_fit();
+        glyph.lines = match storage {
+            GeometryStorage::Prepared => GlyphLines::Prepared {
+                v: self.v_lines.iter().map(Line::prepare).collect(),
+                m: self.m_lines.iter().map(Line::prepare).collect(),
+            },
+            GeometryStorage::Compact => GlyphLines::Compact {
+                v: self.v_lines,
+                m: self.m_lines,
+            },
+        };
         glyph.contour_points = self.contour_points;
         glyph.contour_ends = self.contour_ends;
         glyph.bounds = OutlineBounds {

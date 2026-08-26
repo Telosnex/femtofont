@@ -1,4 +1,4 @@
-use femtofont::{Font, FontSettings};
+use femtofont::{Font, FontSettings, GeometryStorage};
 
 use crate::modules::FONTS;
 const SIZES: [f32; 3] = [1024.0, 8.0, 2.0];
@@ -66,4 +66,46 @@ fn render_all_small() {
 #[test]
 fn render_common_scaled() {
     render_common(&SIZES);
+}
+
+#[test]
+fn compact_geometry_is_pixel_identical_to_prepared_geometry() {
+    for bytes in &FONTS {
+        let prepared = Font::from_bytes(*bytes, FontSettings::default()).unwrap();
+        let compact = Font::from_bytes(
+            *bytes,
+            FontSettings {
+                geometry_storage: GeometryStorage::Compact,
+                retain_stroke_geometry: false,
+                ..FontSettings::default()
+            },
+        )
+        .unwrap();
+        for character in ['A', 'g', '9', '@', 'é'] {
+            for size in [8.0, 16.0, 32.0] {
+                assert_eq!(
+                    prepared.rasterize(character, size),
+                    compact.rasterize(character, size),
+                    "compact mismatch for {character:?} at {size}px"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn omitted_stroke_geometry_preserves_fill_and_returns_a_clear_stroke() {
+    let font = Font::from_bytes(
+        FONTS[0],
+        FontSettings {
+            geometry_storage: GeometryStorage::Compact,
+            retain_stroke_geometry: false,
+            ..FontSettings::default()
+        },
+    )
+    .unwrap();
+    let plain = font.rasterize('A', 24.0);
+    let stroked = font.rasterize_with_stroke('A', 24.0, Default::default());
+    assert_eq!((stroked.metrics, stroked.fill), plain);
+    assert!(stroked.stroke.iter().all(|value| *value == 0));
 }
