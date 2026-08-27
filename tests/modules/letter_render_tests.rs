@@ -53,6 +53,36 @@ fn render_common(sizes: &[f32]) {
 }
 
 #[test]
+fn horizontal_advance_matches_full_metrics_without_outline_requirements() {
+    for bytes in &FONTS {
+        let font = Font::from_bytes(
+            *bytes,
+            FontSettings {
+                cachesize: 0,
+                ..FontSettings::default()
+            },
+        )
+        .unwrap();
+        for character in ['A', 'g', ' ', 'é', '\u{10ffff}'] {
+            for size in [8.0, 16.0, 37.5] {
+                assert_eq!(
+                    font.horizontal_advance(character, size),
+                    font.metrics(character, size).advance_width,
+                    "advance mismatch for {character:?} at {size}px"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "Invalid Index")]
+fn horizontal_advance_rejects_an_invalid_glyph_index() {
+    let font = Font::from_bytes(FONTS[0], FontSettings::default()).unwrap();
+    let _ = font.horizontal_advance_indexed(u16::MAX, 16.0);
+}
+
+#[test]
 fn render_all_small() {
     for font in &FONTS {
         let font = Font::from_bytes(*font, FontSettings::default()).unwrap();

@@ -518,6 +518,34 @@ impl<'a> Font<'a> {
         Some((value as f32) * scale)
     }
 
+    /// Retrieves the scaled horizontal pen advance for a character without
+    /// generating or caching its outline geometry. Missing characters use the
+    /// font's default glyph, matching [`Self::metrics`].
+    ///
+    /// # Arguments
+    ///
+    /// * `character` - The character whose glyph advance should be measured.
+    /// * `px` - The size to scale the advance by, in pixels per Em unit.
+    #[inline(always)]
+    pub fn horizontal_advance(&self, character: char, px: f32) -> f32 {
+        self.horizontal_advance_indexed(self.lookup_glyph_index(character), px)
+    }
+
+    /// Retrieves the scaled horizontal pen advance for a glyph index without
+    /// generating or caching its outline geometry. You normally want
+    /// [`Self::horizontal_advance`] unless glyphs are already indexed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` is outside the font's glyph range, matching
+    /// [`Self::metrics_indexed`].
+    #[inline(always)]
+    pub fn horizontal_advance_indexed(&self, index: u16, px: f32) -> f32 {
+        assert!(index < self.face.number_of_glyphs(), "Invalid Index");
+        let advance = self.face.glyph_hor_advance(GlyphId(index)).unwrap_or(0);
+        f32::from(advance) * self.scale_factor(px)
+    }
+
     /// Retrieves the layout metrics for the given character. If the character isn't present in the
     /// font, then the layout for the font's default character is returned instead.
     /// # Arguments
