@@ -229,7 +229,15 @@ pub struct Geometry {
     contour_ends: Vec<usize>,
     contour_start: usize,
     retain_contours: bool,
+    /// The outline reached [`MAX_GLYPH_SEGMENTS`]; the glyph is drawn blank.
+    overflow: bool,
 }
+
+/// The most edges plus contour points one glyph may produce. A hostile font
+/// can otherwise make one glyph allocate without limit: huge coordinates or
+/// a small units-per-em make curve flattening subdivide to its depth limit.
+/// Real glyphs stay far below this at any supported size.
+pub const MAX_GLYPH_SEGMENTS: usize = 16_384;
 
 struct Segment {
     a: Point,
@@ -258,7 +266,9 @@ impl ttf_parser::OutlineBuilder for Geometry {
         self.start_point = next_point;
         self.previous_point = next_point;
         self.contour_start = self.contour_points.len();
-        self.contour_points.push(next_point);
+        if self.reserve() {
+            self.contour_points.push(next_point);
+        }
     }
 
     fn line_to(&mut self, x0: f32, y0: f32) {
@@ -274,6 +284,9 @@ impl ttf_parser::OutlineBuilder for Geometry {
         let curve = QuadCurve::new(self.previous_point, control_point, next_point);
         let mut stack = vec![Segment::new(self.previous_point, 0.0, next_point, 1.0)];
         while let Some(seg) = stack.pop() {
+            if self.overflow {
+                break;
+            }
             let bt = (seg.at + seg.ct) * 0.5;
             let b = curve.point(bt);
             // This is twice the triangle area
@@ -298,6 +311,9 @@ impl ttf_parser::OutlineBuilder for Geometry {
         let curve = CubeCurve::new(self.previous_point, first_control, second_control, next_point);
         let mut stack = vec![Segment::new(self.previous_point, 0.0, next_point, 1.0)];
         while let Some(seg) = stack.pop() {
+            if self.overflow {
+                break;
+            }
             let bt = (seg.at + seg.ct) * 0.5;
             let b = curve.point(bt);
             // This is twice the triangle area
@@ -357,6 +373,7 @@ impl Geometry {
             contour_ends: Vec::new(),
             contour_start: 0,
             retain_contours,
+            overflow: false,
         }
     }
 
@@ -366,7 +383,7 @@ impl Geometry {
         // avoids a heap allocation for every curve in a glyph.
         let mut stack = [(curve, 0u8); MAX_DEPTH as usize + 1];
         let mut stack_len = 1;
-        while stack_len != 0 {
+        while stack_len != 0 && !self.overflow {
             stack_len -= 1;
             let (curve, depth) = stack[stack_len];
             if depth >= MAX_DEPTH
@@ -388,7 +405,7 @@ impl Geometry {
         const MAX_DEPTH: u8 = 16;
         let mut stack = [(curve, 0u8); MAX_DEPTH as usize + 1];
         let mut stack_len = 1;
-        while stack_len != 0 {
+        while stack_len != 0 && !self.overflow {
             stack_len -= 1;
             let (curve, depth) = stack[stack_len];
             let flatness = point_line_distance_squared(curve.b, curve.a, curve.d)
@@ -414,8 +431,21 @@ impl Geometry {
         self.push_edge(start, end);
     }
 
+    /// Counts one more stored segment. Returns false once the glyph is over
+    /// [`MAX_GLYPH_SEGMENTS`].
+    fn reserve(&mut self) -> bool {
+        if self.overflow {
+            return false;
+        }
+        if self.v_lines.len() + self.m_lines.len() + self.contour_points.len() >= MAX_GLYPH_SEGMENTS {
+            self.overflow = true;
+            return false;
+        }
+        true
+    }
+
     fn push_contour_point(&mut self, point: Point) {
-        if !self.retain_contours {
+        if !self.retain_contours || !self.reserve() {
             return;
         }
         // Keep complete ordered contours for operations such as stroking. Filled scan conversion
@@ -427,7 +457,7 @@ impl Geometry {
 
     fn push_edge(&mut self, start: Point, end: Point) {
         // We're using to_bits here because we only care if they're _exactly_ the same.
-        if start.y.to_bits() != end.y.to_bits() {
+        if start.y.to_bits() != end.y.to_bits() && self.reserve() {
             self.area += (end.y - start.y) * (end.x + start.x);
             if start.x.to_bits() == end.x.to_bits() {
                 self.v_lines.push(Line::new(start, end));
@@ -453,6 +483,14 @@ impl Geometry {
     }
 
     pub(crate) fn finalize(mut self, glyph: &mut Glyph, storage: GeometryStorage) {
+        if self.overflow {
+            self.v_lines = Vec::new();
+            self.m_lines = Vec::new();
+            self.contour_points = Vec::new();
+            self.contour_ends = Vec::new();
+            self.contour_start = 0;
+            self.area = 0.0;
+        }
         self.finish_contour();
         if self.v_lines.is_empty() && self.m_lines.is_empty() {
             self.effective_bounds = AABB::default();
@@ -515,5 +553,49 @@ fn point_line_distance_squared(point: Point, start: Point, end: Point) -> f32 {
     } else {
         let cross = (point.x - start.x) * dy - (point.y - start.y) * dx;
         cross * cross / length_squared
+    }
+}
+
+#[cfg(test)]
+mod segment_budget_tests {
+    use super::*;
+    use ttf_parser::OutlineBuilder;
+
+    fn outline(retain_contours: bool) -> Geometry {
+        // A small units-per-em and a huge curve: flattening wants millions of
+        // segments.
+        let mut geometry = Geometry::new(1000.0, 1.0, retain_contours);
+        geometry.move_to(0.0, 0.0);
+        geometry.quad_to(1.0e6, 1.0e6, 2.0e6, 0.0);
+        geometry.curve_to(1.0e6, -1.0e6, 5.0e5, 1.0e6, 0.0, 0.0);
+        geometry.close();
+        geometry
+    }
+
+    #[test]
+    fn hostile_outline_stops_at_the_budget_and_draws_blank() {
+        for retain_contours in [false, true] {
+            let geometry = outline(retain_contours);
+            assert!(geometry.overflow);
+            assert!(
+                geometry.v_lines.len() + geometry.m_lines.len() + geometry.contour_points.len()
+                    <= MAX_GLYPH_SEGMENTS
+            );
+            let mut glyph = Glyph::default();
+            geometry.finalize(&mut glyph, GeometryStorage::Prepared);
+            assert!(matches!(&glyph.lines, GlyphLines::Prepared { v, m } if v.is_empty() && m.is_empty()));
+        }
+    }
+
+    #[test]
+    fn ordinary_outline_is_kept() {
+        let mut geometry = Geometry::new(32.0, 1000.0, true);
+        geometry.move_to(0.0, 0.0);
+        geometry.quad_to(500.0, 800.0, 1000.0, 0.0);
+        geometry.close();
+        assert!(!geometry.overflow);
+        let mut glyph = Glyph::default();
+        geometry.finalize(&mut glyph, GeometryStorage::Prepared);
+        assert!(matches!(&glyph.lines, GlyphLines::Prepared { m, .. } if !m.is_empty()));
     }
 }
