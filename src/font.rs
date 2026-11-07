@@ -593,8 +593,10 @@ impl<'a> Font<'a> {
         if offset_y < 0.0 {
             offset_y += 1.0;
         }
-        let (width, height) =
-            limit_glyph_pixels(ceil(bounds.width + offset_x) as usize, ceil(bounds.height + offset_y) as usize);
+        let (width, height) = limit_glyph_pixels(
+            ceil(bounds.width + offset_x) as usize,
+            ceil(bounds.height + offset_y) as usize,
+        );
         let metrics = Metrics {
             xmin: floor(bounds.xmin) as i32,
             ymin: floor(bounds.ymin) as i32,
@@ -975,8 +977,10 @@ fn metrics_for_bounds(bounds: OutlineBounds, glyph: &Glyph, scale: f32) -> Metri
     let ymin = floor(bounds.ymin) as i32;
     let right = ceil(xmax) as i32;
     let top = ceil(ymax) as i32;
-    let (width, height) =
-        limit_glyph_pixels(right.saturating_sub(xmin).max(0) as usize, top.saturating_sub(ymin).max(0) as usize);
+    let (width, height) = limit_glyph_pixels(
+        right.saturating_sub(xmin).max(0) as usize,
+        top.saturating_sub(ymin).max(0) as usize,
+    );
     Metrics {
         xmin,
         ymin,
