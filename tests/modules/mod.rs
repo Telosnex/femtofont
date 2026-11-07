@@ -1,4 +1,5 @@
 pub mod baseline_tests;
+pub mod hostile_tests;
 pub mod letter_render_tests;
 pub mod stroke_tests;
 

@@ -110,17 +110,16 @@ impl Raster {
     }
 
     fn add(&mut self, index: usize, height: f32, mid_x: f32) {
-        // This is fast and hip.
-        unsafe {
+        // Bounds-checked: float error on extreme outlines from a hostile
+        // font can put an edge outside the canvas. Such writes are dropped.
+        let Some(end) = index.checked_add(2) else {
+            return;
+        };
+        if let Some([left, right]) = self.a.get_mut(index..end) {
             let m = height * mid_x;
-            *self.a.get_unchecked_mut(index) += height - m;
-            *self.a.get_unchecked_mut(index + 1) += m;
+            *left += height - m;
+            *right += m;
         }
-
-        // This is safe but slow.
-        // let m = height * mid_x;
-        // self.a[index] += height - m;
-        // self.a[index + 1] += m;
     }
 
     fn v_line(&mut self, line: &PreparedLine) {

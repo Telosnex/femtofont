@@ -388,9 +388,13 @@ impl<'a> Font<'a> {
     }
 
     fn generate_new_glyph(&self, index: u16) -> Result<Glyph, &'static str> {
-        if index >= self.face.number_of_glyphs() {
-            return Err("Attempted to map a codepoint out of bounds.");
-        }
+        // A cmap may map a character past the glyph count. Draw .notdef,
+        // as for a character the font does not have.
+        let index = if index >= self.face.number_of_glyphs() {
+            0
+        } else {
+            index
+        };
 
         let mut glyph = Glyph::default();
         let glyph_id = GlyphId(index);
@@ -589,11 +593,13 @@ impl<'a> Font<'a> {
         if offset_y < 0.0 {
             offset_y += 1.0;
         }
+        let (width, height) =
+            limit_glyph_pixels(ceil(bounds.width + offset_x) as usize, ceil(bounds.height + offset_y) as usize);
         let metrics = Metrics {
             xmin: floor(bounds.xmin) as i32,
             ymin: floor(bounds.ymin) as i32,
-            width: ceil(bounds.width + offset_x) as usize,
-            height: ceil(bounds.height + offset_y) as usize,
+            width,
+            height,
             advance_width: scale * glyph.advance_width,
             advance_height: scale * glyph.advance_height,
             bounds,
@@ -809,14 +815,16 @@ impl<'a> Font<'a> {
     /// 0% coverage of that pixel by the glyph and 255 represents 100% coverage. The vec starts at
     /// the top left corner of the glyph.
     pub fn rasterize_indexed(&self, index: u16, px: f32) -> (Metrics, Vec<u8>) {
-        if px <= 0.0 {
+        if !px.is_finite() || px <= 0.0 {
             return (Metrics::default(), Vec::new());
         }
         let glyph = &self.get_glyph(index).expect("Invalid Index");
         let scale = self.scale_factor(px);
         let (metrics, offset_x, offset_y) = self.metrics_raw(scale, glyph, 0.0);
         let mut canvas = Raster::new(metrics.width, metrics.height);
-        canvas.draw(glyph, scale, scale, offset_x, offset_y);
+        if metrics.width > 0 && metrics.height > 0 {
+            canvas.draw(glyph, scale, scale, offset_x, offset_y);
+        }
         (metrics, canvas.get_bitmap())
     }
 
@@ -837,14 +845,16 @@ impl<'a> Font<'a> {
     /// represents 0% coverage of that subpixel by the glyph and 255 represents 100% coverage. The
     /// vec starts at the top left corner of the glyph.
     pub fn rasterize_indexed_subpixel(&self, index: u16, px: f32) -> (Metrics, Vec<u8>) {
-        if px <= 0.0 {
+        if !px.is_finite() || px <= 0.0 {
             return (Metrics::default(), Vec::new());
         }
         let glyph = &self.get_glyph(index).expect("Invalid Index");
         let scale = self.scale_factor(px);
         let (metrics, offset_x, offset_y) = self.metrics_raw(scale, glyph, 0.0);
         let mut canvas = Raster::new(metrics.width * 3, metrics.height);
-        canvas.draw(glyph, scale * 3.0, scale, offset_x, offset_y);
+        if metrics.width > 0 && metrics.height > 0 {
+            canvas.draw(glyph, scale * 3.0, scale, offset_x, offset_y);
+        }
         (metrics, canvas.get_bitmap())
     }
 
@@ -945,6 +955,19 @@ impl<'a> Font<'a> {
     }
 }
 
+/// The most pixels one glyph bitmap may have. Huge outline coordinates or
+/// a tiny units-per-em in a hostile font can otherwise ask for a bitmap of
+/// any size. A glyph past this limit is drawn blank, with zero size.
+pub const MAX_GLYPH_PIXELS: usize = 1 << 20;
+
+fn limit_glyph_pixels(width: usize, height: usize) -> (usize, usize) {
+    if width.saturating_mul(height) > MAX_GLYPH_PIXELS {
+        (0, 0)
+    } else {
+        (width, height)
+    }
+}
+
 fn metrics_for_bounds(bounds: OutlineBounds, glyph: &Glyph, scale: f32) -> Metrics {
     let xmax = bounds.xmin + bounds.width;
     let ymax = bounds.ymin + bounds.height;
@@ -952,11 +975,13 @@ fn metrics_for_bounds(bounds: OutlineBounds, glyph: &Glyph, scale: f32) -> Metri
     let ymin = floor(bounds.ymin) as i32;
     let right = ceil(xmax) as i32;
     let top = ceil(ymax) as i32;
+    let (width, height) =
+        limit_glyph_pixels(right.saturating_sub(xmin).max(0) as usize, top.saturating_sub(ymin).max(0) as usize);
     Metrics {
         xmin,
         ymin,
-        width: right.saturating_sub(xmin) as usize,
-        height: top.saturating_sub(ymin) as usize,
+        width,
+        height,
         advance_width: scale * glyph.advance_width,
         advance_height: scale * glyph.advance_height,
         bounds,
