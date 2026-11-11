@@ -97,11 +97,16 @@ pub(crate) struct StrokeGeometry {
 }
 
 impl StrokeGeometry {
-    pub fn new(glyph: &Glyph, scale: f32, settings: StrokeSettings) -> Self {
+    pub fn new(glyph: &Glyph, scale: f32, scale_y: f32, settings: StrokeSettings) -> Self {
         let Some(radius) = settings.radius() else {
             return Self::empty();
         };
-        if glyph.contour_points.is_empty() || !scale.is_finite() || scale <= 0.0 {
+        if glyph.contour_points.is_empty()
+            || !scale.is_finite()
+            || scale <= 0.0
+            || !scale_y.is_finite()
+            || scale_y <= 0.0
+        {
             return Self::empty();
         }
 
@@ -111,7 +116,7 @@ impl StrokeGeometry {
             if end <= start || end > glyph.contour_points.len() {
                 break;
             }
-            builder.add_contour(&glyph.contour_points[start..end], scale, radius, settings);
+            builder.add_contour(&glyph.contour_points[start..end], scale, scale_y, radius, settings);
             start = end;
         }
         builder.compile()
@@ -145,11 +150,18 @@ impl StrokePathBuilder {
         }
     }
 
-    fn add_contour(&mut self, contour: &[Point], scale: f32, radius: f32, settings: StrokeSettings) {
+    fn add_contour(
+        &mut self,
+        contour: &[Point],
+        scale: f32,
+        scale_y: f32,
+        radius: f32,
+        settings: StrokeSettings,
+    ) {
         self.clean.clear();
         self.clean.reserve(contour.len());
         for point in contour {
-            let scaled = Point::new(point.x * scale, point.y * scale);
+            let scaled = Point::new(point.x * scale, point.y * scale_y);
             if self.clean.last().is_none_or(|last| distance_squared(*last, scaled) > POINT_EPSILON_SQUARED) {
                 self.clean.push(scaled);
             }

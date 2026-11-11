@@ -42,11 +42,17 @@ impl OutlineBounds {
     /// Scales the bounding box by the given factor.
     #[inline(always)]
     pub fn scale(&self, scale: f32) -> OutlineBounds {
+        self.scale_xy(scale, scale)
+    }
+
+    /// Scales the bounding box by separate horizontal and vertical factors.
+    #[inline(always)]
+    pub fn scale_xy(&self, scale_x: f32, scale_y: f32) -> OutlineBounds {
         OutlineBounds {
-            xmin: self.xmin * scale,
-            ymin: self.ymin * scale,
-            width: self.width * scale,
-            height: self.height * scale,
+            xmin: self.xmin * scale_x,
+            ymin: self.ymin * scale_y,
+            width: self.width * scale_x,
+            height: self.height * scale_y,
         }
     }
 }
@@ -576,15 +582,21 @@ impl<'a> Font<'a> {
     ///
     /// * `Metrics` - Sizing and positioning metadata for the glyph.
     pub fn metrics_indexed(&self, index: u16, px: f32) -> Metrics {
+        self.metrics_indexed_y_scaled(index, px, 1.0)
+    }
+
+    /// Like [`Font::metrics_indexed`], with the glyph's height multiplied by `y_scale`, as
+    /// [`Font::rasterize_indexed_y_scaled`] draws it. Advance widths do not change.
+    pub fn metrics_indexed_y_scaled(&self, index: u16, px: f32, y_scale: f32) -> Metrics {
         let glyph = self.get_glyph(index).expect("Invalid Index");
         let scale = self.scale_factor(px);
-        let (metrics, _, _) = self.metrics_raw(scale, &glyph, 0.0);
+        let (metrics, _, _) = self.metrics_raw(scale, scale * valid_y_scale(y_scale), &glyph, 0.0);
         metrics
     }
 
     /// Internal function to generate the metrics, offset_x, and offset_y of the glyph.
-    fn metrics_raw(&self, scale: f32, glyph: &Glyph, offset: f32) -> (Metrics, f32, f32) {
-        let bounds = glyph.bounds.scale(scale);
+    fn metrics_raw(&self, scale: f32, scale_y: f32, glyph: &Glyph, offset: f32) -> (Metrics, f32, f32) {
+        let bounds = glyph.bounds.scale_xy(scale, scale_y);
         let mut offset_x = fract(bounds.xmin + offset);
         let mut offset_y = fract(1.0 - fract(bounds.height) - fract(bounds.ymin));
         if offset_x < 0.0 {
@@ -603,7 +615,7 @@ impl<'a> Font<'a> {
             width,
             height,
             advance_width: scale * glyph.advance_width,
-            advance_height: scale * glyph.advance_height,
+            advance_height: scale_y * glyph.advance_height,
             bounds,
         };
         (metrics, offset_x, offset_y)
@@ -632,7 +644,19 @@ impl<'a> Font<'a> {
         px: f32,
         settings: StrokeSettings,
     ) -> StrokedGlyph {
-        self.rasterize_indexed_stroke_impl(index, px, settings, false, true)
+        self.rasterize_indexed_stroke_impl(index, px, 1.0, settings, false, true)
+    }
+
+    /// Like [`Font::rasterize_indexed_with_stroke`], with the outline's height multiplied by
+    /// `y_scale` before both layers are drawn. The stroke width stays in pixels.
+    pub fn rasterize_indexed_with_stroke_y_scaled(
+        &self,
+        index: u16,
+        px: f32,
+        y_scale: f32,
+        settings: StrokeSettings,
+    ) -> StrokedGlyph {
+        self.rasterize_indexed_stroke_impl(index, px, y_scale, settings, false, true)
     }
 
     /// Rasterizes only stroke coverage for a layout raster configuration.
@@ -658,7 +682,7 @@ impl<'a> Font<'a> {
         px: f32,
         settings: StrokeSettings,
     ) -> (Metrics, Vec<u8>) {
-        let rasterized = self.rasterize_indexed_stroke_impl(index, px, settings, false, false);
+        let rasterized = self.rasterize_indexed_stroke_impl(index, px, 1.0, settings, false, false);
         (rasterized.metrics, rasterized.stroke)
     }
 
@@ -690,7 +714,7 @@ impl<'a> Font<'a> {
         px: f32,
         settings: StrokeSettings,
     ) -> StrokedGlyph {
-        self.rasterize_indexed_stroke_impl(index, px, settings, true, true)
+        self.rasterize_indexed_stroke_impl(index, px, 1.0, settings, true, true)
     }
 
     /// Rasterizes only RGB-subpixel stroke coverage for a layout raster configuration.
@@ -721,7 +745,7 @@ impl<'a> Font<'a> {
         px: f32,
         settings: StrokeSettings,
     ) -> (Metrics, Vec<u8>) {
-        let rasterized = self.rasterize_indexed_stroke_impl(index, px, settings, true, false);
+        let rasterized = self.rasterize_indexed_stroke_impl(index, px, 1.0, settings, true, false);
         (rasterized.metrics, rasterized.stroke)
     }
 
@@ -817,15 +841,24 @@ impl<'a> Font<'a> {
     /// 0% coverage of that pixel by the glyph and 255 represents 100% coverage. The vec starts at
     /// the top left corner of the glyph.
     pub fn rasterize_indexed(&self, index: u16, px: f32) -> (Metrics, Vec<u8>) {
+        self.rasterize_indexed_y_scaled(index, px, 1.0)
+    }
+
+    /// Like [`Font::rasterize_indexed`], with the outline's height multiplied by `y_scale`.
+    /// The baseline stays on a pixel edge, so a caller can scale a font's x-height to a whole
+    /// number of pixels (vertical hinting). Advance widths do not change. A `y_scale` that is
+    /// not finite and positive is taken as 1.
+    pub fn rasterize_indexed_y_scaled(&self, index: u16, px: f32, y_scale: f32) -> (Metrics, Vec<u8>) {
         if !px.is_finite() || px <= 0.0 {
             return (Metrics::default(), Vec::new());
         }
         let glyph = &self.get_glyph(index).expect("Invalid Index");
         let scale = self.scale_factor(px);
-        let (metrics, offset_x, offset_y) = self.metrics_raw(scale, glyph, 0.0);
+        let scale_y = scale * valid_y_scale(y_scale);
+        let (metrics, offset_x, offset_y) = self.metrics_raw(scale, scale_y, glyph, 0.0);
         let mut canvas = Raster::new(metrics.width, metrics.height);
         if metrics.width > 0 && metrics.height > 0 {
-            canvas.draw(glyph, scale, scale, offset_x, offset_y);
+            canvas.draw(glyph, scale, scale_y, offset_x, offset_y);
         }
         (metrics, canvas.get_bitmap())
     }
@@ -852,7 +885,7 @@ impl<'a> Font<'a> {
         }
         let glyph = &self.get_glyph(index).expect("Invalid Index");
         let scale = self.scale_factor(px);
-        let (metrics, offset_x, offset_y) = self.metrics_raw(scale, glyph, 0.0);
+        let (metrics, offset_x, offset_y) = self.metrics_raw(scale, scale, glyph, 0.0);
         let mut canvas = Raster::new(metrics.width * 3, metrics.height);
         if metrics.width > 0 && metrics.height > 0 {
             canvas.draw(glyph, scale * 3.0, scale, offset_x, offset_y);
@@ -864,6 +897,7 @@ impl<'a> Font<'a> {
         &self,
         index: u16,
         px: f32,
+        y_scale: f32,
         settings: StrokeSettings,
         subpixel: bool,
         include_fill: bool,
@@ -878,8 +912,9 @@ impl<'a> Font<'a> {
 
         let glyph = self.get_glyph(index).expect("Invalid Index");
         let scale = self.scale_factor(px);
-        let stroke_geometry = StrokeGeometry::new(&glyph, scale, settings);
-        let fill_bounds = glyph.bounds.scale(scale);
+        let scale_y = scale * valid_y_scale(y_scale);
+        let stroke_geometry = StrokeGeometry::new(&glyph, scale, scale_y, settings);
+        let fill_bounds = glyph.bounds.scale_xy(scale, scale_y);
         let stroke_is_empty = stroke_geometry.v_lines.is_empty() && stroke_geometry.m_lines.is_empty();
         let bounds = if stroke_is_empty {
             if include_fill {
@@ -892,7 +927,7 @@ impl<'a> Font<'a> {
         } else {
             stroke_geometry.bounds
         };
-        let metrics = metrics_for_bounds(bounds, &glyph, scale);
+        let metrics = metrics_for_bounds(bounds, &glyph, scale, scale_y);
         let x_multiplier = if subpixel {
             3
         } else {
@@ -910,7 +945,7 @@ impl<'a> Font<'a> {
                 canvas.draw(
                     &glyph,
                     scale * x_multiplier as f32,
-                    scale,
+                    scale_y,
                     (fill_bounds.xmin - canvas_left) * x_multiplier as f32,
                     canvas_top - fill_top,
                 );
@@ -970,7 +1005,16 @@ fn limit_glyph_pixels(width: usize, height: usize) -> (usize, usize) {
     }
 }
 
-fn metrics_for_bounds(bounds: OutlineBounds, glyph: &Glyph, scale: f32) -> Metrics {
+/// A vertical scale that is not finite and positive is ignored.
+fn valid_y_scale(y_scale: f32) -> f32 {
+    if y_scale.is_finite() && y_scale > 0.0 {
+        y_scale
+    } else {
+        1.0
+    }
+}
+
+fn metrics_for_bounds(bounds: OutlineBounds, glyph: &Glyph, scale: f32, scale_y: f32) -> Metrics {
     let xmax = bounds.xmin + bounds.width;
     let ymax = bounds.ymin + bounds.height;
     let xmin = floor(bounds.xmin) as i32;
@@ -987,7 +1031,7 @@ fn metrics_for_bounds(bounds: OutlineBounds, glyph: &Glyph, scale: f32) -> Metri
         width,
         height,
         advance_width: scale * glyph.advance_width,
-        advance_height: scale * glyph.advance_height,
+        advance_height: scale_y * glyph.advance_height,
         bounds,
     }
 }
